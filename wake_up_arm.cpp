@@ -199,8 +199,10 @@ void showMessage(const char *line1, const char *line2) {
   Brain.Screen.setFillColor(black);
   Brain.Screen.setPenColor(white);
   Brain.Screen.clearScreen();
-  Brain.Screen.printAt(4, 35, "%s", line1);
-  Brain.Screen.printAt(4, 65, "%s", line2);
+  // The false (no text background) picks the right printAt; without it the
+  // call is ambiguous because "%s" could also be read as a bool
+  Brain.Screen.printAt(4, 35, false, "%s", line1);
+  Brain.Screen.printAt(4, 65, false, "%s", line2);
   Brain.Screen.render();
 }
 
