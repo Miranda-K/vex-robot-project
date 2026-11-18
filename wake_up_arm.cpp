@@ -350,12 +350,16 @@ void extendCarriage(double cm, int speed) {
 // closer and try again. So a full round of 3 returns 3; anything less is a miss.
 int nudge(int times, int speed) {
   int hits = 0;
+  int pokes = 0;
+  bool stopRound = false;  // set when the round should end early
 
-  for (int i = 0; i < times; i++) {
-    if (anyButtonPressed()) {
-      buttonRequested = true;
-      return hits;
-    }
+  if (anyButtonPressed()) {
+    buttonRequested = true;
+    stopRound = true;
+  }
+
+  while (pokes < times && !stopRound) {
+    pokes++;
 
     // Poke out until the bumper touches, the nudger reaches the end of its
     // range, a button is pressed, or the motor jams
@@ -396,23 +400,23 @@ int nudge(int times, int speed) {
     {}
     if (NudgeBumper.pressing()) {
       pushDetected = true;
-      return hits;
     }
 
-    // Missed (reached the end of the range without touching): stop so the
-    // carriage can move closer
-    if (buttonRequested || !touched) {
-      return hits;
-    }
+    // End the round early if: pushed away, a button was pressed, or the poke
+    // missed (reached the end of the range without touching, so the carriage
+    // needs to move closer)
+    stopRound = pushDetected || buttonRequested || !touched;
 
-    // Pause half a second, but stop early if a button is pressed
-    timer pauseTimer;
-    pauseTimer.clear();
-    while (pauseTimer.time(msec) < 500 && !anyButtonPressed())
-    {}
-    if (anyButtonPressed()) {
-      buttonRequested = true;
-      return hits;
+    // Pause half a second before the next poke, but stop early if a button is pressed
+    if (!stopRound && pokes < times) {
+      timer pauseTimer;
+      pauseTimer.clear();
+      while (pauseTimer.time(msec) < 500 && !anyButtonPressed())
+      {}
+      if (anyButtonPressed()) {
+        buttonRequested = true;
+        stopRound = true;
+      }
     }
   }
   return hits;
@@ -423,40 +427,46 @@ int nudge(int times, int speed) {
 int scanBed(int &closestMm) {
   int scanDist[SCAN_STEPS];
 
-  showMessage("Scanning", "");
+  // Start every reading as "nothing seen", so a jam part-way leaves no garbage
   for (int i = 0; i < SCAN_STEPS; i++) {
-    int angle = -SCAN_DEG + i * SCAN_STEP_DEG;
-    rotateBase(angle, 30);
-    if (jammed) {
-      closestMm = -1;
-      return NOT_FOUND;
-    }
-    wait(100, msec);  // let the sensor settle
+    scanDist[i] = -1;
+  }
 
-    if (HeadSensor.isObjectDetected()) {
-      scanDist[i] = (int)HeadSensor.objectDistance(mm);
-    } else {
-      scanDist[i] = -1;
+  // Sweep, stopping early (via the loop condition) if the base jams
+  showMessage("Scanning", "");
+  int step = 0;
+  while (step < SCAN_STEPS && !jammed) {
+    int angle = -SCAN_DEG + step * SCAN_STEP_DEG;
+    rotateBase(angle, 30);
+    if (!jammed) {
+      wait(100, msec);  // let the sensor settle
+      if (HeadSensor.isObjectDetected()) {
+        scanDist[step] = (int)HeadSensor.objectDistance(mm);
+      }
     }
+    step++;
   }
 
   // Search the array for the closest reading inside the bed range
   int bestIndex = -1;
-  for (int i = 0; i < SCAN_STEPS; i++) {
-    int d = scanDist[i];
-    if (d >= MIN_HEAD_MM && d <= MAX_HEAD_MM) {
-      if (bestIndex == -1 || d < scanDist[bestIndex]) {
-        bestIndex = i;
+  if (!jammed) {
+    for (int i = 0; i < SCAN_STEPS; i++) {
+      int d = scanDist[i];
+      if (d >= MIN_HEAD_MM && d <= MAX_HEAD_MM) {
+        if (bestIndex == -1 || d < scanDist[bestIndex]) {
+          bestIndex = i;
+        }
       }
     }
   }
 
-  if (bestIndex == -1) {
-    closestMm = -1;
-    return NOT_FOUND;
+  int headAngle = NOT_FOUND;
+  closestMm = -1;
+  if (bestIndex != -1) {
+    closestMm = scanDist[bestIndex];
+    headAngle = -SCAN_DEG + bestIndex * SCAN_STEP_DEG;
   }
-  closestMm = scanDist[bestIndex];
-  return -SCAN_DEG + bestIndex * SCAN_STEP_DEG;
+  return headAngle;
 }
 
 // --- game helpers ---
@@ -559,7 +569,10 @@ bool awakeCheck(int rounds) {
   timer idleTimer;
   idleTimer.clear();
 
-  while (true) {
+  bool gameOver = false;  // set on a win, a crash, or no input
+  bool won = false;
+
+  while (!gameOver) {
     // Buttons: only a NEW press moves the player
     bool left = Brain.buttonLeft.pressing();
     bool right = Brain.buttonRight.pressing();
@@ -580,45 +593,54 @@ bool awakeCheck(int rounds) {
     if (playerLane >= NUM_LANES - 1) {
       score++;
       if (score >= rounds) {
-        drawGame(cars, NUM_LANES - 1, score, rounds);
-        wait(500, msec);
-        return true;
-      }
-      playerLane = 0;
-      for (int i = 0; i < NUM_CARS; i++) {
-        cars[i].speed *= SPEEDUP;
+        won = true;
+        gameOver = true;
+      } else {
+        playerLane = 0;
+        for (int i = 0; i < NUM_CARS; i++) {
+          cars[i].speed *= SPEEDUP;
+        }
       }
     }
 
     // Move the cars and wrap them around the screen
-    for (int i = 0; i < NUM_CARS; i++) {
-      cars[i].y += cars[i].speed;
-      if (cars[i].y > SCREEN_H) {
-        cars[i].y = -cars[i].height;
-      } else if (cars[i].y < -cars[i].height) {
-        cars[i].y = SCREEN_H;
+    if (!gameOver) {
+      for (int i = 0; i < NUM_CARS; i++) {
+        cars[i].y += cars[i].speed;
+        if (cars[i].y > SCREEN_H) {
+          cars[i].y = -cars[i].height;
+        } else if (cars[i].y < -cars[i].height) {
+          cars[i].y = SCREEN_H;
+        }
       }
     }
 
     // Collisions: same lane and the boxes overlap vertically
+    bool hit = false;
     for (int i = 0; i < NUM_CARS; i++) {
       if (cars[i].lane == playerLane &&
           cars[i].y < PLAYER_Y + PLAYER_SIZE &&
           cars[i].y + cars[i].height > PLAYER_Y) {
-        drawGame(cars, playerLane, score, rounds);
-        wait(500, msec);
-        return false;
+        hit = true;
       }
+    }
+    if (hit && !won) {
+      gameOver = true;
     }
 
     // Fell back asleep?
-    if (idleTimer.time(seconds) > IDLE_LIMIT_SEC) {
-      return false;
+    if (!gameOver && idleTimer.time(seconds) > IDLE_LIMIT_SEC) {
+      gameOver = true;
     }
 
     drawGame(cars, playerLane, score, rounds);
-    wait(FRAME_MS, msec);
+    if (gameOver) {
+      wait(500, msec);  // show the final frame for a moment
+    } else {
+      wait(FRAME_MS, msec);
+    }
   }
+  return won;
 }
 
 // ===========================================================================
@@ -691,12 +713,8 @@ int setAlarm() {
 // Clears the timer and shows a countdown until the alarm.
 void waitForAlarm(int seconds) {
   AlarmTimer.clear();
-  while (true) {
-    int elapsed = (int)(AlarmTimer.time(msec) / 1000);
-    int left = seconds - elapsed;
-    if (left <= 0) {
-      break;
-    }
+  int left = seconds;
+  while (left > 0) {
     Brain.Screen.setFillColor(black);
     Brain.Screen.setPenColor(white);
     Brain.Screen.clearScreen();
@@ -708,6 +726,7 @@ void waitForAlarm(int seconds) {
     }
     Brain.Screen.render();
     wait(200, msec);
+    left = seconds - (int)(AlarmTimer.time(msec) / 1000);
   }
   showMessage("WAKE UP!", "");
 }
@@ -819,59 +838,61 @@ int main() {
   if (headAngle == NOT_FOUND && !jammed) {
     headAngle = scanBed(headMm);
   }
-  if (jammed) { stopForJam(); Brain.programStop(); return EXIT_SUCCESS; }
-  if (headAngle == NOT_FOUND) {
-    homeAll();
-    showMessage("No head", "Going home");
-    Brain.programStop();
-    return EXIT_SUCCESS;
-  }
+  bool headFound = (headAngle != NOT_FOUND) && !jammed;
 
   // Reach
   double reachCm = 0;
-  reachHead(headAngle, headMm, reachCm);
-  if (jammed) { stopForJam(); Brain.programStop(); return EXIT_SUCCESS; }
-  showMessage("WAKE UP!", "");
+  if (headFound) {
+    reachHead(headAngle, headMm, reachCm);
+    if (!jammed) {
+      showMessage("WAKE UP!", "");
+    }
+  }
 
-  // Wake loop: nudge until a button is pressed and the game is won
+  // Wake loop: nudge until a button is pressed and the game is won.
+  // Flags end the loop: awake (game won), jammed (a motor jammed),
+  // lostHead (pushed away and the head couldn't be found again).
   bool awake = false;
-  while (!awake) {
+  bool lostHead = false;
+  while (headFound && !awake && !jammed && !lostHead) {
     int hits = nudge(NUDGES_PER_ROUND, 60);
 
     if (pushDetected) {
-      if (!recoverFromPush(headAngle, headMm, reachCm)) {
-        homeAll();
-        showMessage("Lost head", "Going home");
-        Brain.programStop();
-        return EXIT_SUCCESS;
+      lostHead = !recoverFromPush(headAngle, headMm, reachCm);
+    } else {
+      // A poke missed: move the carriage 1 cm closer, then the next round tries again
+      if (hits < NUDGES_PER_ROUND && !buttonRequested && reachCm < CARRIAGE_MAX_CM) {
+        reachCm += 1;
+        extendCarriage(reachCm, 20);
       }
-      if (jammed) { stopForJam(); Brain.programStop(); return EXIT_SUCCESS; }
-      continue;
-    }
 
-    // A poke missed: move the carriage 1 cm closer, then the next round tries again
-    if (hits < NUDGES_PER_ROUND && !buttonRequested && reachCm < CARRIAGE_MAX_CM) {
-      reachCm += 1;
-      extendCarriage(reachCm, 20);
-    }
-    if (jammed) { stopForJam(); Brain.programStop(); return EXIT_SUCCESS; }
-
-    if (buttonRequested || anyButtonPressed()) {
-      buttonRequested = false;
-      awake = awakeCheck(5);
-      if (!awake) {
-        showMessage("Not awake", "Try again");
-        wait(1500, msec);
-        showMessage("WAKE UP!", "");
+      if (!jammed && (buttonRequested || anyButtonPressed())) {
+        buttonRequested = false;
+        awake = awakeCheck(5);
+        if (!awake) {
+          showMessage("Not awake", "Try again");
+          wait(1500, msec);
+          showMessage("WAKE UP!", "");
+        }
       }
     }
   }
 
-  // Shut down
-  homeAll();
-  if (jammed) { stopForJam(); Brain.programStop(); return EXIT_SUCCESS; }
-  showMessage("Good", "morning!");
-  wait(3, seconds);
+  // Shut down: one ending for every way the program can finish
+  if (!jammed) {
+    homeAll();
+  }
+  if (jammed) {
+    stopForJam();
+  } else if (!headFound) {
+    showMessage("No head", "Going home");
+  } else if (lostHead) {
+    showMessage("Lost head", "Going home");
+  } else {
+    showMessage("Good", "morning!");
+    wait(3, seconds);
+  }
+
   Brain.programStop();
   return EXIT_SUCCESS;
 }
