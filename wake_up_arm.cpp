@@ -94,7 +94,12 @@ const double RANGE_OVERRUN_DEG = 10.0;   // base past its range by this much = s
 // Geometry and tuning (must sit inside the ranges above)
 const double SENSOR_TO_TIP_CM = 10.0;    // nudger tip ahead of the sensor when retracted
 const double NUDGE_ANGLE = 40.0;         // elbow angle used for nudging (MEASURE)
-const double NUDGE_DEG = 90.0;           // nudger motor stroke per poke (MEASURE)
+const double NUDGE_EXTRA_DEG = 20.0;     // keep pushing this far past first contact so the nudge is felt (TUNE)
+const int NUDGES_PER_ROUND = 3;          // 1 poke that finds the person + 2 more
+
+// Alarm: true = demo timing, where the clock-style "07:30" means 7 min 30 s
+// instead of 7 h 30 min. Set to false for real hours and minutes.
+const bool DEMO_ALARM = true;
 
 // Motor safety: a jammed motor draws more current (class rule: keep it under 1 A)
 const double MAX_CURRENT_AMP = 1.0;
@@ -329,19 +334,22 @@ void tiltElbow(double targetDeg, int speed) {
 // Slides the carriage to an absolute position (0 = fully pulled in).
 void extendCarriage(double cm, int speed) {
   if (CM_PER_DEG <= 0) {
-    showMessage("Set CM_PER_DEG", "in the code");
+    showMessage("Set", "CM_PER_DEG");
     jammed = true;
-    strncpy(jamPart, "Carriage cfg", sizeof(jamPart) - 1);
+    strncpy(jamPart, "No CM/DEG", sizeof(jamPart) - 1);
     return;
   }
   cm = clampD(cm, CARRIAGE_MIN_CM, CARRIAGE_MAX_CM);
   moveMotorTo(CarriageMotor, cm / CM_PER_DEG, speed, "Carriage");
 }
 
-// Pokes the person `times` times and returns how many pokes touched (bumper pressed).
+// Pokes the person up to `times` times and returns how many pokes touched.
+// Each poke goes out until the bumper touches, pushes NUDGE_EXTRA_DEG further so
+// the nudge is felt, then pulls back. If a poke reaches the end of the nudger's
+// range without touching, it stops early so main() can move the carriage 1 cm
+// closer and try again. So a full round of 3 returns 3; anything less is a miss.
 int nudge(int times, int speed) {
   int hits = 0;
-  double stroke = clampD(NUDGE_DEG, NUDGER_MIN_DEG, NUDGER_MAX_DEG);
 
   for (int i = 0; i < times; i++) {
     if (anyButtonPressed()) {
@@ -349,19 +357,27 @@ int nudge(int times, int speed) {
       return hits;
     }
 
-    // Poke out until the bumper presses (that's the safety part), the stroke
-    // ends, a button is pressed, or the motor jams
+    // Poke out until the bumper touches, the nudger reaches the end of its
+    // range, a button is pressed, or the motor jams
     timer pokeTimer;
     pokeTimer.clear();
     NudgerMotor.spin(forward, speed, percent);
-    while (!NudgeBumper.pressing() && NudgerMotor.position(degrees) < stroke &&
+    while (!NudgeBumper.pressing() && NudgerMotor.position(degrees) < NUDGER_MAX_DEG &&
            !anyButtonPressed() && motorOk(NudgerMotor, pokeTimer, 2))
     {}
-    NudgerMotor.stop(brake);
 
-    if (NudgeBumper.pressing()) {
+    bool touched = NudgeBumper.pressing();
+    if (touched) {
+      // Push a little more past contact (never past the range) so it's noticeable
+      double pushTo = clampD(NudgerMotor.position(degrees) + NUDGE_EXTRA_DEG,
+                             NUDGER_MIN_DEG, NUDGER_MAX_DEG);
+      pokeTimer.clear();
+      while (NudgerMotor.position(degrees) < pushTo && motorOk(NudgerMotor, pokeTimer, 1))
+      {}
       hits++;
     }
+    NudgerMotor.stop(brake);
+
     if (anyButtonPressed()) {
       buttonRequested = true;
     }
@@ -383,7 +399,9 @@ int nudge(int times, int speed) {
       return hits;
     }
 
-    if (buttonRequested) {
+    // Missed (reached the end of the range without touching): stop so the
+    // carriage can move closer
+    if (buttonRequested || !touched) {
       return hits;
     }
 
@@ -405,7 +423,7 @@ int nudge(int times, int speed) {
 int scanBed(int &closestMm) {
   int scanDist[SCAN_STEPS];
 
-  showMessage("Scanning...", "");
+  showMessage("Scanning", "");
   for (int i = 0; i < SCAN_STEPS; i++) {
     int angle = -SCAN_DEG + i * SCAN_STEP_DEG;
     rotateBase(angle, 30);
@@ -512,8 +530,9 @@ bool awakeCheck(int rounds) {
     Brain.Screen.setFillColor(black);
     Brain.Screen.setPenColor(white);
     Brain.Screen.clearScreen();
-    Brain.Screen.printAt(20, 30, "Cross the road!");
-    Brain.Screen.printAt(75, 70, "%d", n);
+    Brain.Screen.printAt(4, 25, "Cross the");
+    Brain.Screen.printAt(4, 45, "road!");
+    Brain.Screen.printAt(75, 85, "%d", n);
     Brain.Screen.render();
     wait(1, seconds);
   }
@@ -608,7 +627,7 @@ bool awakeCheck(int rounds) {
 
 void startUp() {
   Brain.Screen.render();  // turn on double buffering from the start
-  showMessage("Keep robot still", "Calibrating...");
+  showMessage("Keep still", "Calibrate");
 
   BrainInertial.calibrate();
   while (BrainInertial.isCalibrating())
@@ -631,11 +650,13 @@ void startUp() {
   NudgerMotor.setMaxTorque(40, percent);
 }
 
-// Left adds an hour, right adds a minute, check confirms.
-// Returns seconds until the alarm (the brain has no time-of-day clock).
+// Left adds to the first number, right adds to the second, check confirms.
+// The alarm shows like a clock, "07:30". With DEMO_ALARM that means 7 min 30 s,
+// otherwise 7 h 30 min. Returns seconds until the alarm (the brain has no
+// time-of-day clock).
 int setAlarm() {
   int hours = 0;
-  int minutes = 1;  // 1 minute default for the demo
+  int minutes = DEMO_ALARM ? 30 : 1;  // default: 30 s in demo mode, 1 min otherwise
   bool confirmed = false;
 
   waitForRelease();
@@ -644,8 +665,8 @@ int setAlarm() {
     Brain.Screen.setPenColor(white);
     Brain.Screen.clearScreen();
     Brain.Screen.printAt(4, 20, "Set alarm");
-    Brain.Screen.printAt(4, 50, "in %02d h %02d min", hours, minutes);
-    Brain.Screen.printAt(4, 80, "< h  m >  check");
+    Brain.Screen.printAt(4, 50, "%02d:%02d", hours, minutes);
+    Brain.Screen.printAt(4, 80, "<   > chk");
     Brain.Screen.render();
 
     // Wait for a press, act on it, then wait for the release (so it counts once)
@@ -660,6 +681,9 @@ int setAlarm() {
     }
     while (anyButtonPressed())
     {}
+  }
+  if (DEMO_ALARM) {
+    return hours * 60 + minutes;  // "07:30" = 7 min 30 s
   }
   return hours * 3600 + minutes * 60;
 }
@@ -677,7 +701,11 @@ void waitForAlarm(int seconds) {
     Brain.Screen.setPenColor(white);
     Brain.Screen.clearScreen();
     Brain.Screen.printAt(4, 35, "Alarm in");
-    Brain.Screen.printAt(4, 65, "%02d:%02d:%02d", left / 3600, (left / 60) % 60, left % 60);
+    if (DEMO_ALARM) {
+      Brain.Screen.printAt(4, 65, "%02d:%02d", left / 60, left % 60);  // same style as setAlarm
+    } else {
+      Brain.Screen.printAt(4, 65, "%02d:%02d:%02d", left / 3600, (left / 60) % 60, left % 60);
+    }
     Brain.Screen.render();
     wait(200, msec);
   }
@@ -708,7 +736,7 @@ void stopForJam() {
   NudgerMotor.stop(brake);
   extendCarriage(0, 30);
   tiltElbow(0, 40);
-  showMessage(part, "jammed. Stopped.");
+  showMessage(part, "JAMMED");
 }
 
 // Moves to the head: base, then carriage, then elbow.
@@ -725,7 +753,7 @@ void reachHead(int headAngle, int headMm, double &reachCm) {
 // head angle with the gyro, and rescan only if the person moved.
 // Returns false if the head can't be found again.
 bool recoverFromPush(int &headAngle, int &headMm, double &reachCm) {
-  showMessage("Pushed away", "Backing off...");
+  showMessage("Pushed!", "Backing up");
   pushDetected = false;
 
   extendCarriage(reachCm - 3, 30);
@@ -794,7 +822,7 @@ int main() {
   if (jammed) { stopForJam(); Brain.programStop(); return EXIT_SUCCESS; }
   if (headAngle == NOT_FOUND) {
     homeAll();
-    showMessage("No head found", "Going home");
+    showMessage("No head", "Going home");
     Brain.programStop();
     return EXIT_SUCCESS;
   }
@@ -808,12 +836,12 @@ int main() {
   // Wake loop: nudge until a button is pressed and the game is won
   bool awake = false;
   while (!awake) {
-    int hits = nudge(3, 60);
+    int hits = nudge(NUDGES_PER_ROUND, 60);
 
     if (pushDetected) {
       if (!recoverFromPush(headAngle, headMm, reachCm)) {
         homeAll();
-        showMessage("Lost the head", "Going home");
+        showMessage("Lost head", "Going home");
         Brain.programStop();
         return EXIT_SUCCESS;
       }
@@ -821,7 +849,8 @@ int main() {
       continue;
     }
 
-    if (hits == 0 && !buttonRequested && reachCm < CARRIAGE_MAX_CM) {
+    // A poke missed: move the carriage 1 cm closer, then the next round tries again
+    if (hits < NUDGES_PER_ROUND && !buttonRequested && reachCm < CARRIAGE_MAX_CM) {
       reachCm += 1;
       extendCarriage(reachCm, 20);
     }
@@ -831,7 +860,7 @@ int main() {
       buttonRequested = false;
       awake = awakeCheck(5);
       if (!awake) {
-        showMessage("Not awake yet!", "");
+        showMessage("Not awake", "Try again");
         wait(1500, msec);
         showMessage("WAKE UP!", "");
       }
@@ -841,7 +870,7 @@ int main() {
   // Shut down
   homeAll();
   if (jammed) { stopForJam(); Brain.programStop(); return EXIT_SUCCESS; }
-  showMessage("Good morning!", "");
+  showMessage("Good", "morning!");
   wait(3, seconds);
   Brain.programStop();
   return EXIT_SUCCESS;
