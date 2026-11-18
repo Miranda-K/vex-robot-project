@@ -533,7 +533,8 @@ void drawGame(Car cars[], int playerLane, int score, int rounds) {
 // Returns false on a crash or 20 s with no input.
 bool awakeCheck(int rounds) {
   waitForRelease();  // the press that started the game shouldn't move the player
-  srand((unsigned int)AlarmTimer.time(msec));
+  srand((unsigned int)AlarmTimer.time(msec)); //declaration of seed: by using timer (unique value) ensures that each seed is unique --> random numbers will be different
+
 
   // 3, 2, 1 so a sleepy person isn't hit instantly
   for (int n = 3; n >= 1; n--) {
