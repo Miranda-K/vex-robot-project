@@ -96,11 +96,16 @@ const double SENSOR_TO_TIP_CM = 10.0;    // nudger tip ahead of the sensor when 
 const double NUDGE_ANGLE = 40.0;         // elbow angle used for nudging (MEASURE)
 const double NUDGE_DEG = 90.0;           // nudger motor stroke per poke (MEASURE)
 
+// Motor safety: a jammed motor draws more current (class rule: keep it under 1 A)
+const double MAX_CURRENT_AMP = 1.0;
+const int CURRENT_IGNORE_MS = 200;       // ignore the current spike when a motor first starts
+
 // Base control
 const bool USE_GYRO_FOR_BASE = true;     // false = use base motor encoder instead of the gyro
 const double BASE_TOLERANCE_DEG = 2.0;
 const double BASE_TIMEOUT_SEC = 5.0;
-const double BASE_MIN_POWER = 8.0;       // percent, so it never stalls just short of target
+const double BASE_SLOW_ZONE_DEG = 10.0;  // slow down this far from the target so it doesn't overshoot
+const int BASE_SLOW_SPEED = 10;          // percent
 
 // Head scan
 const int SCAN_DEG = 90;                 // sweep from -SCAN_DEG to +SCAN_DEG
@@ -141,13 +146,13 @@ const double SPEEDUP = 1.15;             // cars get 15% faster after each cross
 // BrainInertial is declared in the generated section above. It only measures
 // the base if the brain turns with the base. If it doesn't, either add a
 // separate gyro sensor on the turntable or set USE_GYRO_FOR_BASE = false.
-motor BaseMotor     = motor(PORT1, false);  // true = reversed
-motor ElbowMotor    = motor(PORT2, false);
-motor CarriageMotor = motor(PORT3, false);
-motor NudgerMotor   = motor(PORT4, false);
-distance HeadSensor = distance(PORT5);
-bumper NudgeBumper  = bumper(PORT6);
-timer AlarmTimer    = timer();
+motor BaseMotor(PORT1, bool(forward));      // bool(reverse) flips the direction
+motor ElbowMotor(PORT2, bool(forward));
+motor CarriageMotor(PORT3, bool(forward));
+motor NudgerMotor(PORT4, bool(forward));
+distance HeadSensor(PORT5);
+bumper NudgeBumper(PORT6);
+timer AlarmTimer;
 
 // ===========================================================================
 // GLOBAL STATE
@@ -183,11 +188,10 @@ bool anyButtonPressed() {
 
 // Waits until no brain button is held (max 3 s), so one press isn't read twice.
 void waitForRelease() {
-  timer releaseTimer = timer();
+  timer releaseTimer;
   releaseTimer.clear();
-  while (anyButtonPressed() && releaseTimer.time(seconds) < 3) {
-    wait(20, msec);
-  }
+  while (anyButtonPressed() && releaseTimer.time(seconds) < 3)
+  {}
 }
 
 // Every screen update ends with render() because double buffering is on.
@@ -215,28 +219,57 @@ double baseAngle() {
   return BaseMotor.position(degrees) / BASE_RATIO;
 }
 
-// Starts a move to an absolute encoder position and watches it with a timeout.
-// Returns false (and reports a jam) if the motor doesn't get there in time.
+// True while a moving motor looks healthy: not past its timeout, and not drawing
+// jam-level current (the start-up spike in the first CURRENT_IGNORE_MS is ignored).
+bool motorOk(motor &m, timer &moveTimer, double timeoutSec) {
+  if (moveTimer.time(seconds) > timeoutSec) return false;
+  if (moveTimer.time(msec) > CURRENT_IGNORE_MS && m.current(amp) >= MAX_CURRENT_AMP) return false;
+  return true;
+}
+
+// True if the base has run well past its range (motor direction is probably wrong).
+bool baseOutOfRange() {
+  double angle = baseAngle();
+  return angle < BASE_MIN_DEG - RANGE_OVERRUN_DEG || angle > BASE_MAX_DEG + RANGE_OVERRUN_DEG;
+}
+
+// True while the base move looks healthy: in range, not timed out, not jammed.
+bool baseOk(timer &moveTimer) {
+  return !baseOutOfRange() && motorOk(BaseMotor, moveTimer, BASE_TIMEOUT_SEC);
+}
+
+// Spins a motor until its encoder reaches targetMotorDeg, then holds.
+// Returns false (and reports a jam) on a timeout or a current spike.
 // The motor is passed by reference so the real device object is used.
 bool moveMotorTo(motor &m, double targetMotorDeg, int speed, const char *name) {
-  double travel = fabs(targetMotorDeg - m.position(degrees));
-  double expectedSec = travel / (MOTOR_DEG_PER_SEC_AT_100 * speed / 100.0);
+  double start = m.position(degrees);
+  if (fabs(targetMotorDeg - start) < 1) {
+    return true;  // already there
+  }
+  double expectedSec = fabs(targetMotorDeg - start) / (MOTOR_DEG_PER_SEC_AT_100 * speed / 100.0);
   double timeoutSec = 2.0 * expectedSec + 1.5;
 
-  m.spinToPosition(targetMotorDeg, degrees, speed, percent, false);
-  timer moveTimer = timer();
+  timer moveTimer;
   moveTimer.clear();
-  wait(20, msec);  // give the move time to start before checking isDone()
+  bool reached = false;
 
-  while (!m.isDone()) {
-    if (moveTimer.time(seconds) > timeoutSec) {
-      m.stop(hold);
-      reportJam(name);
-      return false;
-    }
-    wait(20, msec);
+  if (targetMotorDeg > start) {
+    m.spin(forward, speed, percent);
+    while (m.position(degrees) < targetMotorDeg && motorOk(m, moveTimer, timeoutSec))
+    {}
+    reached = m.position(degrees) >= targetMotorDeg;
+  } else {
+    m.spin(reverse, speed, percent);
+    while (m.position(degrees) > targetMotorDeg && motorOk(m, moveTimer, timeoutSec))
+    {}
+    reached = m.position(degrees) <= targetMotorDeg;
   }
-  return true;
+  m.stop(hold);
+
+  if (!reached) {
+    reportJam(name);
+  }
+  return reached;
 }
 
 // ===========================================================================
@@ -246,51 +279,49 @@ bool moveMotorTo(motor &m, double targetMotorDeg, int speed, const char *name) {
 // Turns the base to an angle measured by the gyro (0 = straight ahead).
 void rotateBase(double targetDeg, int speed) {
   targetDeg = clampD(targetDeg, BASE_MIN_DEG, BASE_MAX_DEG);
+  double start = baseAngle();
+  if (fabs(targetDeg - start) < BASE_TOLERANCE_DEG) {
+    return;  // already there
+  }
 
-  timer moveTimer = timer();
+  timer moveTimer;
   moveTimer.clear();
+  bool reached = false;
 
-  while (true) {
-    double current = baseAngle();
-    double error = targetDeg - current;
-
-    if (fabs(error) < BASE_TOLERANCE_DEG) {
-      break;
-    }
-    // Safety: if the base runs past its range, the motor direction is probably
-    // backwards (flip BaseMotor's reversed setting).
-    if (current < BASE_MIN_DEG - RANGE_OVERRUN_DEG || current > BASE_MAX_DEG + RANGE_OVERRUN_DEG) {
-      BaseMotor.stop(hold);
-      reportJam("Base dir?");
-      return;
-    }
-    if (moveTimer.time(seconds) > BASE_TIMEOUT_SEC) {
-      BaseMotor.stop(hold);
-      reportJam("Base");
-      return;
-    }
-
-    // Slow down near the target so it doesn't overshoot
-    double power = fmin(speed, 3.0 * fabs(error));
-    if (power < BASE_MIN_POWER) {
-      power = BASE_MIN_POWER;
-    }
-    if (error > 0) {
-      BaseMotor.spin(forward, power, percent);
-    } else {
-      BaseMotor.spin(reverse, power, percent);
-    }
-    wait(20, msec);
+  if (targetDeg > start) {
+    // Fast until close, then slow so it doesn't overshoot
+    BaseMotor.spin(forward, speed, percent);
+    while (baseAngle() < targetDeg - BASE_SLOW_ZONE_DEG && baseOk(moveTimer))
+    {}
+    BaseMotor.spin(forward, BASE_SLOW_SPEED, percent);
+    while (baseAngle() < targetDeg && baseOk(moveTimer))
+    {}
+    reached = baseAngle() >= targetDeg;
+  } else {
+    BaseMotor.spin(reverse, speed, percent);
+    while (baseAngle() > targetDeg + BASE_SLOW_ZONE_DEG && baseOk(moveTimer))
+    {}
+    BaseMotor.spin(reverse, BASE_SLOW_SPEED, percent);
+    while (baseAngle() > targetDeg && baseOk(moveTimer))
+    {}
+    reached = baseAngle() <= targetDeg;
   }
   BaseMotor.stop(hold);
+
+  if (!reached) {
+    if (baseOutOfRange()) {
+      reportJam("Base dir?");  // ran past its range: flip BaseMotor's direction
+    } else {
+      reportJam("Base");
+    }
+  }
 }
 
 // Moves the arm to an angle (0 = home, arm up; positive = down toward the bed).
+// The worm gear holds the arm when the motor stops.
 void tiltElbow(double targetDeg, int speed) {
   targetDeg = clampD(targetDeg, ELBOW_MIN_DEG, ELBOW_MAX_DEG);
-  if (moveMotorTo(ElbowMotor, targetDeg * ELBOW_RATIO, speed, "Elbow")) {
-    ElbowMotor.stop(hold);  // the worm holds anyway, but hold to be sure
-  }
+  moveMotorTo(ElbowMotor, targetDeg * ELBOW_RATIO, speed, "Elbow");
 }
 
 // Slides the carriage to an absolute position (0 = fully pulled in).
@@ -316,53 +347,52 @@ int nudge(int times, int speed) {
       return hits;
     }
 
-    // Poke out while watching the bumper
-    NudgerMotor.spinToPosition(stroke, degrees, speed, percent, false);
-    timer pokeTimer = timer();
+    // Poke out until the bumper presses (that's the safety part), the stroke
+    // ends, a button is pressed, or the motor jams
+    timer pokeTimer;
     pokeTimer.clear();
-    wait(20, msec);
-    bool hit = false;
+    NudgerMotor.spin(forward, speed, percent);
+    while (!NudgeBumper.pressing() && NudgerMotor.position(degrees) < stroke &&
+           !anyButtonPressed() && motorOk(NudgerMotor, pokeTimer, 2))
+    {}
+    NudgerMotor.stop(brake);
 
-    while (!NudgerMotor.isDone()) {
-      if (NudgeBumper.pressing()) {
-        hit = true;
-        NudgerMotor.stop(brake);  // stop pushing right away
-        break;
-      }
-      if (anyButtonPressed()) {
-        buttonRequested = true;
-      }
-      if (pokeTimer.time(seconds) > 2) {
-        NudgerMotor.stop(brake);
-        break;
-      }
-      wait(10, msec);
-    }
-    if (hit) {
+    if (NudgeBumper.pressing()) {
       hits++;
     }
-
-    // Pull back (setTimeout in startUp stops this from hanging)
-    NudgerMotor.spinToPosition(0, degrees, speed, percent, true);
-
-    // Stretch goal: bumper still pressed after retracting = someone is pushing the arm
-    timer holdTimer = timer();
-    holdTimer.clear();
-    while (NudgeBumper.pressing()) {
-      if (holdTimer.time(seconds) > PUSH_HOLD_SEC) {
-        pushDetected = true;
-        return hits;
-      }
-      wait(20, msec);
+    if (anyButtonPressed()) {
+      buttonRequested = true;
     }
 
-    // Pause about half a second, checking buttons so the person can stop it quickly
-    for (int t = 0; t < 25; t++) {
-      if (anyButtonPressed()) {
-        buttonRequested = true;
-        return hits;
-      }
-      wait(20, msec);
+    // Pull back to 0
+    pokeTimer.clear();
+    NudgerMotor.spin(reverse, speed, percent);
+    while (NudgerMotor.position(degrees) > NUDGER_MIN_DEG && motorOk(NudgerMotor, pokeTimer, 2))
+    {}
+    NudgerMotor.stop(brake);
+
+    // Stretch goal: bumper still pressed after retracting = someone is pushing the arm
+    timer holdTimer;
+    holdTimer.clear();
+    while (NudgeBumper.pressing() && holdTimer.time(seconds) < PUSH_HOLD_SEC)
+    {}
+    if (NudgeBumper.pressing()) {
+      pushDetected = true;
+      return hits;
+    }
+
+    if (buttonRequested) {
+      return hits;
+    }
+
+    // Pause half a second, but stop early if a button is pressed
+    timer pauseTimer;
+    pauseTimer.clear();
+    while (pauseTimer.time(msec) < 500 && !anyButtonPressed())
+    {}
+    if (anyButtonPressed()) {
+      buttonRequested = true;
+      return hits;
     }
   }
   return hits;
@@ -505,7 +535,7 @@ bool awakeCheck(int rounds) {
   int score = 0;
   bool prevLeft = Brain.buttonLeft.pressing();
   bool prevRight = Brain.buttonRight.pressing();
-  timer idleTimer = timer();
+  timer idleTimer;
   idleTimer.clear();
 
   while (true) {
@@ -579,9 +609,8 @@ void startUp() {
   showMessage("Keep robot still", "Calibrating...");
 
   BrainInertial.calibrate();
-  while (BrainInertial.isCalibrating()) {
-    wait(50, msec);
-  }
+  while (BrainInertial.isCalibrating())
+  {}
   BrainInertial.setRotation(0, degrees);
 
   BaseMotor.setPosition(0, degrees);
@@ -598,9 +627,6 @@ void startUp() {
   ElbowMotor.setMaxTorque(50, percent);
   CarriageMotor.setMaxTorque(50, percent);
   NudgerMotor.setMaxTorque(40, percent);
-
-  // Only applies to waiting (blocking) moves, like the nudger pulling back
-  NudgerMotor.setTimeout(2, seconds);
 }
 
 // Left adds an hour, right adds a minute, check confirms.
@@ -608,30 +634,10 @@ void startUp() {
 int setAlarm() {
   int hours = 0;
   int minutes = 1;  // 1 minute default for the demo
+  bool confirmed = false;
 
   waitForRelease();
-  bool prevLeft = false;
-  bool prevRight = false;
-  bool prevCheck = false;
-
-  while (true) {
-    bool left = Brain.buttonLeft.pressing();
-    bool right = Brain.buttonRight.pressing();
-    bool check = Brain.buttonCheck.pressing();
-
-    if (left && !prevLeft) {
-      hours = (hours + 1) % 24;
-    }
-    if (right && !prevRight) {
-      minutes = (minutes + 1) % 60;
-    }
-    if (check && !prevCheck) {
-      break;
-    }
-    prevLeft = left;
-    prevRight = right;
-    prevCheck = check;
-
+  while (!confirmed) {
     Brain.Screen.setFillColor(black);
     Brain.Screen.setPenColor(white);
     Brain.Screen.clearScreen();
@@ -639,9 +645,20 @@ int setAlarm() {
     Brain.Screen.printAt(4, 50, "in %02d h %02d min", hours, minutes);
     Brain.Screen.printAt(4, 80, "< h  m >  check");
     Brain.Screen.render();
-    wait(20, msec);
+
+    // Wait for a press, act on it, then wait for the release (so it counts once)
+    while (!anyButtonPressed())
+    {}
+    if (Brain.buttonLeft.pressing()) {
+      hours = (hours + 1) % 24;
+    } else if (Brain.buttonRight.pressing()) {
+      minutes = (minutes + 1) % 60;
+    } else if (Brain.buttonCheck.pressing()) {
+      confirmed = true;
+    }
+    while (anyButtonPressed())
+    {}
   }
-  waitForRelease();
   return hours * 3600 + minutes * 60;
 }
 
@@ -713,11 +730,10 @@ bool recoverFromPush(int &headAngle, int &headMm, double &reachCm) {
   if (jammed) return true;
 
   // Wait for the person to let go (max 10 s)
-  timer letGo = timer();
+  timer letGo;
   letGo.clear();
-  while (NudgeBumper.pressing() && letGo.time(seconds) < 10) {
-    wait(50, msec);
-  }
+  while (NudgeBumper.pressing() && letGo.time(seconds) < 10)
+  {}
 
   // Base: use the gyro, since a push can back-drive the base gears
   if (fabs(baseAngle() - headAngle) > PUSH_ANGLE_TOL_DEG) {
@@ -773,17 +789,18 @@ int main() {
   if (headAngle == NOT_FOUND && !jammed) {
     headAngle = scanBed(headMm);
   }
-  if (jammed) { stopForJam(); return 0; }
+  if (jammed) { stopForJam(); Brain.programStop(); return EXIT_SUCCESS; }
   if (headAngle == NOT_FOUND) {
     homeAll();
     showMessage("No head found", "Going home");
-    return 0;
+    Brain.programStop();
+    return EXIT_SUCCESS;
   }
 
   // Reach
   double reachCm = 0;
   reachHead(headAngle, headMm, reachCm);
-  if (jammed) { stopForJam(); return 0; }
+  if (jammed) { stopForJam(); Brain.programStop(); return EXIT_SUCCESS; }
   showMessage("WAKE UP!", "");
 
   // Wake loop: nudge until a button is pressed and the game is won
@@ -795,9 +812,10 @@ int main() {
       if (!recoverFromPush(headAngle, headMm, reachCm)) {
         homeAll();
         showMessage("Lost the head", "Going home");
-        return 0;
+        Brain.programStop();
+        return EXIT_SUCCESS;
       }
-      if (jammed) { stopForJam(); return 0; }
+      if (jammed) { stopForJam(); Brain.programStop(); return EXIT_SUCCESS; }
       continue;
     }
 
@@ -805,7 +823,7 @@ int main() {
       reachCm += 1;
       extendCarriage(reachCm, 20);
     }
-    if (jammed) { stopForJam(); return 0; }
+    if (jammed) { stopForJam(); Brain.programStop(); return EXIT_SUCCESS; }
 
     if (buttonRequested || anyButtonPressed()) {
       buttonRequested = false;
@@ -820,8 +838,9 @@ int main() {
 
   // Shut down
   homeAll();
-  if (jammed) { stopForJam(); return 0; }
+  if (jammed) { stopForJam(); Brain.programStop(); return EXIT_SUCCESS; }
   showMessage("Good morning!", "");
   wait(3, seconds);
-  return 0;
+  Brain.programStop();
+  return EXIT_SUCCESS;
 }
