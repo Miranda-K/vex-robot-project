@@ -157,16 +157,9 @@ motor CarriageMotor(PORT3, bool(forward));
 motor NudgerMotor(PORT4, bool(forward));
 distance HeadSensor(PORT5);
 bumper NudgeBumper(PORT6);
-timer AlarmTimer;
 
-// ===========================================================================
-// GLOBAL STATE
-// ===========================================================================
-
-bool jammed = false;             // set by any move that times out
-char jamPart[16] = "";           // which part jammed, for the screen
-bool buttonRequested = false;    // a brain button was seen during nudging
-bool pushDetected = false;       // nudge() saw the bumper held after retracting
+// No global variables: main() owns the program's state (jammed, buttonRequested,
+// pushDetected) and passes it to functions by reference.
 
 // Game data
 struct Car {
@@ -211,10 +204,10 @@ void showMessage(const char *line1, const char *line2) {
   Brain.Screen.render();
 }
 
-void reportJam(const char *part) {
+// Marks a jam (jammed is main's flag, passed by reference) and shows which part
+// jammed. The message stays on screen through the shutdown.
+void reportJam(const char *part, bool &jammed) {
   jammed = true;
-  strncpy(jamPart, part, sizeof(jamPart) - 1);
-  jamPart[sizeof(jamPart) - 1] = '\0';
   showMessage(part, "jammed!");
 }
 
@@ -248,7 +241,7 @@ bool baseOk(timer &moveTimer) {
 // Spins a motor until its encoder reaches targetMotorDeg, then holds.
 // Returns false (and reports a jam) on a timeout or a current spike.
 // The motor is passed by reference so the real device object is used.
-bool moveMotorTo(motor &m, double targetMotorDeg, int speed, const char *name) {
+bool moveMotorTo(motor &m, double targetMotorDeg, int speed, const char *name, bool &jammed) {
   double start = m.position(degrees);
   if (fabs(targetMotorDeg - start) < 1) {
     return true;  // already there
@@ -274,7 +267,7 @@ bool moveMotorTo(motor &m, double targetMotorDeg, int speed, const char *name) {
   m.stop(hold);
 
   if (!reached) {
-    reportJam(name);
+    reportJam(name, jammed);
   }
   return reached;
 }
@@ -284,7 +277,7 @@ bool moveMotorTo(motor &m, double targetMotorDeg, int speed, const char *name) {
 // ===========================================================================
 
 // Turns the base to an angle measured by the gyro (0 = straight ahead).
-void rotateBase(double targetDeg, int speed) {
+void rotateBase(double targetDeg, int speed, bool &jammed) {
   targetDeg = clampD(targetDeg, BASE_MIN_DEG, BASE_MAX_DEG);
   double start = baseAngle();
   if (fabs(targetDeg - start) < BASE_TOLERANCE_DEG) {
@@ -317,30 +310,29 @@ void rotateBase(double targetDeg, int speed) {
 
   if (!reached) {
     if (baseOutOfRange()) {
-      reportJam("Base dir?");  // ran past its range: flip BaseMotor's direction
+      reportJam("Base dir?", jammed);  // ran past its range: flip BaseMotor's direction
     } else {
-      reportJam("Base");
+      reportJam("Base", jammed);
     }
   }
 }
 
 // Moves the arm to an angle (0 = home, arm up; positive = down toward the bed).
 // The worm gear holds the arm when the motor stops.
-void tiltElbow(double targetDeg, int speed) {
+void tiltElbow(double targetDeg, int speed, bool &jammed) {
   targetDeg = clampD(targetDeg, ELBOW_MIN_DEG, ELBOW_MAX_DEG);
-  moveMotorTo(ElbowMotor, targetDeg * ELBOW_RATIO, speed, "Elbow");
+  moveMotorTo(ElbowMotor, targetDeg * ELBOW_RATIO, speed, "Elbow", jammed);
 }
 
 // Slides the carriage to an absolute position (0 = fully pulled in).
-void extendCarriage(double cm, int speed) {
+void extendCarriage(double cm, int speed, bool &jammed) {
   if (CM_PER_DEG <= 0) {
     showMessage("Set", "CM_PER_DEG");
-    jammed = true;
-    strncpy(jamPart, "No CM/DEG", sizeof(jamPart) - 1);
+    jammed = true;  // stop safely: can't convert cm to motor degrees yet
     return;
   }
   cm = clampD(cm, CARRIAGE_MIN_CM, CARRIAGE_MAX_CM);
-  moveMotorTo(CarriageMotor, cm / CM_PER_DEG, speed, "Carriage");
+  moveMotorTo(CarriageMotor, cm / CM_PER_DEG, speed, "Carriage", jammed);
 }
 
 // Pokes the person up to `times` times and returns how many pokes touched.
@@ -348,7 +340,8 @@ void extendCarriage(double cm, int speed) {
 // the nudge is felt, then pulls back. If a poke reaches the end of the nudger's
 // range without touching, it stops early so main() can move the carriage 1 cm
 // closer and try again. So a full round of 3 returns 3; anything less is a miss.
-int nudge(int times, int speed) {
+// buttonRequested and pushDetected are main's flags, set here by reference.
+int nudge(int times, int speed, bool &buttonRequested, bool &pushDetected) {
   int hits = 0;
   int pokes = 0;
   bool stopRound = false;  // set when the round should end early
@@ -424,7 +417,7 @@ int nudge(int times, int speed) {
 
 // Sweeps the base and finds the closest object in bed range.
 // Returns its angle and sets closestMm (by reference); NOT_FOUND and -1 if nothing.
-int scanBed(int &closestMm) {
+int scanBed(int &closestMm, bool &jammed) {
   int scanDist[SCAN_STEPS];
 
   // Start every reading as "nothing seen", so a jam part-way leaves no garbage
@@ -437,7 +430,7 @@ int scanBed(int &closestMm) {
   int step = 0;
   while (step < SCAN_STEPS && !jammed) {
     int angle = -SCAN_DEG + step * SCAN_STEP_DEG;
-    rotateBase(angle, 30);
+    rotateBase(angle, 30, jammed);
     if (!jammed) {
       wait(100, msec);  // let the sensor settle
       if (HeadSensor.isObjectDetected()) {
@@ -533,8 +526,7 @@ void drawGame(Car cars[], int playerLane, int score, int rounds) {
 // Returns false on a crash or 20 s with no input.
 bool awakeCheck(int rounds) {
   waitForRelease();  // the press that started the game shouldn't move the player
-  srand((unsigned int)AlarmTimer.time(msec)); //declaration of seed: by using timer (unique value) ensures that each seed is unique --> random numbers will be different
-
+  // (random numbers are already seeded by vexcodeInit() at the start of main)
 
   // 3, 2, 1 so a sleepy person isn't hit instantly
   for (int n = 3; n >= 1; n--) {
@@ -713,7 +705,8 @@ int setAlarm() {
 
 // Clears the timer and shows a countdown until the alarm.
 void waitForAlarm(int seconds) {
-  AlarmTimer.clear();
+  timer alarmTimer;
+  alarmTimer.clear();
   int left = seconds;
   while (left > 0) {
     Brain.Screen.setFillColor(black);
@@ -727,7 +720,7 @@ void waitForAlarm(int seconds) {
     }
     Brain.Screen.render();
     wait(200, msec);
-    left = seconds - (int)(AlarmTimer.time(msec) / 1000);
+    left = seconds - (int)(alarmTimer.time(msec) / 1000);
   }
   showMessage("WAKE UP!", "");
 }
@@ -740,43 +733,40 @@ double reachFor(int distanceMm) {
 }
 
 // Carriage in, then elbow up, then base to 0, so it never swings while extended.
-void homeAll() {
-  extendCarriage(0, 40);
-  tiltElbow(0, 50);
-  rotateBase(0, 30);
+void homeAll(bool &jammed) {
+  extendCarriage(0, 40, jammed);
+  tiltElbow(0, 50, jammed);
+  rotateBase(0, 30, jammed);
 }
 
 // After a jam: pull the carriage in and lift the elbow, but leave the base alone.
+// The "<part> jammed!" message from reportJam() stays on the screen.
 void stopForJam() {
-  char part[16];
-  strncpy(part, jamPart, sizeof(part));
-  part[sizeof(part) - 1] = '\0';
-
-  jammed = false;  // let the retract moves run
+  bool retractJammed = false;  // separate flag so the retract moves still run
   NudgerMotor.stop(brake);
-  extendCarriage(0, 30);
-  tiltElbow(0, 40);
-  showMessage(part, "JAMMED");
+  extendCarriage(0, 30, retractJammed);
+  tiltElbow(0, 40, retractJammed);
 }
 
 // Moves to the head: base, then carriage, then elbow.
-void reachHead(int headAngle, int headMm, double &reachCm) {
-  rotateBase(headAngle, 30);
+void reachHead(int headAngle, int headMm, double &reachCm, bool &jammed) {
+  rotateBase(headAngle, 30, jammed);
   if (jammed) return;
   reachCm = reachFor(headMm);
-  extendCarriage(reachCm, 40);
+  extendCarriage(reachCm, 40, jammed);
   if (jammed) return;
-  tiltElbow(NUDGE_ANGLE, 50);
+  tiltElbow(NUDGE_ANGLE, 50, jammed);
 }
 
 // Stretch goal: the person held the arm away. Back off, return to the saved
 // head angle with the gyro, and rescan only if the person moved.
 // Returns false if the head can't be found again.
-bool recoverFromPush(int &headAngle, int &headMm, double &reachCm) {
+bool recoverFromPush(int &headAngle, int &headMm, double &reachCm,
+                     bool &pushDetected, bool &jammed) {
   showMessage("Pushed!", "Backing up");
   pushDetected = false;
 
-  extendCarriage(reachCm - 3, 30);
+  extendCarriage(reachCm - 3, 30, jammed);
   if (jammed) return true;
 
   // Wait for the person to let go (max 10 s)
@@ -787,14 +777,14 @@ bool recoverFromPush(int &headAngle, int &headMm, double &reachCm) {
 
   // Base: use the gyro, since a push can back-drive the base gears
   if (fabs(baseAngle() - headAngle) > PUSH_ANGLE_TOL_DEG) {
-    rotateBase(headAngle, 20);
+    rotateBase(headAngle, 20, jammed);
     if (jammed) return true;
   }
 
   // Elbow: the worm shouldn't move, but check
   double elbowDeg = ElbowMotor.position(degrees) / ELBOW_RATIO;
   if (fabs(elbowDeg - NUDGE_ANGLE) > PUSH_ELBOW_TOL_DEG) {
-    tiltElbow(NUDGE_ANGLE, 40);
+    tiltElbow(NUDGE_ANGLE, 40, jammed);
     if (jammed) return true;
   }
 
@@ -802,20 +792,20 @@ bool recoverFromPush(int &headAngle, int &headMm, double &reachCm) {
   bool seen = HeadSensor.isObjectDetected();
   int nowMm = seen ? (int)HeadSensor.objectDistance(mm) : -1;
   if (!seen || abs(nowMm - headMm) > PUSH_RESCAN_MM) {
-    extendCarriage(0, 40);
-    tiltElbow(0, 50);
+    extendCarriage(0, 40, jammed);
+    tiltElbow(0, 50, jammed);
     if (jammed) return true;
     int newMm = 0;
-    int newAngle = scanBed(newMm);
+    int newAngle = scanBed(newMm, jammed);
     if (jammed) return true;
     if (newAngle == NOT_FOUND) {
       return false;
     }
     headAngle = newAngle;
     headMm = newMm;
-    reachHead(headAngle, headMm, reachCm);
+    reachHead(headAngle, headMm, reachCm, jammed);
   } else {
-    extendCarriage(reachCm, 30);
+    extendCarriage(reachCm, 30, jammed);
   }
   showMessage("WAKE UP!", "");
   return true;
@@ -829,22 +819,28 @@ int main() {
   // Initializing Robot Configuration. DO NOT REMOVE!
   vexcodeInit();
 
+  // Program state: these used to be globals. Functions that change them get
+  // them by reference.
+  bool jammed = false;           // set by any move that times out or overloads
+  bool buttonRequested = false;  // a brain button was seen during nudging
+  bool pushDetected = false;     // nudge() saw the bumper held after retracting
+
   startUp();
   int alarmSec = setAlarm();
   waitForAlarm(alarmSec);
 
   // Find the head (scan once more if nothing found)
   int headMm = 0;
-  int headAngle = scanBed(headMm);  // headMm filled in by reference
+  int headAngle = scanBed(headMm, jammed);  // headMm filled in by reference
   if (headAngle == NOT_FOUND && !jammed) {
-    headAngle = scanBed(headMm);
+    headAngle = scanBed(headMm, jammed);
   }
   bool headFound = (headAngle != NOT_FOUND) && !jammed;
 
   // Reach
   double reachCm = 0;
   if (headFound) {
-    reachHead(headAngle, headMm, reachCm);
+    reachHead(headAngle, headMm, reachCm, jammed);
     if (!jammed) {
       showMessage("WAKE UP!", "");
     }
@@ -856,15 +852,15 @@ int main() {
   bool awake = false;
   bool lostHead = false;
   while (headFound && !awake && !jammed && !lostHead) {
-    int hits = nudge(NUDGES_PER_ROUND, 60);
+    int hits = nudge(NUDGES_PER_ROUND, 60, buttonRequested, pushDetected);
 
     if (pushDetected) {
-      lostHead = !recoverFromPush(headAngle, headMm, reachCm);
+      lostHead = !recoverFromPush(headAngle, headMm, reachCm, pushDetected, jammed);
     } else {
       // A poke missed: move the carriage 1 cm closer, then the next round tries again
       if (hits < NUDGES_PER_ROUND && !buttonRequested && reachCm < CARRIAGE_MAX_CM) {
         reachCm += 1;
-        extendCarriage(reachCm, 20);
+        extendCarriage(reachCm, 20, jammed);
       }
 
       if (!jammed && (buttonRequested || anyButtonPressed())) {
@@ -881,7 +877,7 @@ int main() {
 
   // Shut down: one ending for every way the program can finish
   if (!jammed) {
-    homeAll();
+    homeAll(jammed);
   }
   if (jammed) {
     stopForJam();
