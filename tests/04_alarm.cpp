@@ -95,7 +95,6 @@ const double RANGE_OVERRUN_DEG = 10.0;   // base past its range by this much = s
 const double SENSOR_TO_TIP_CM = 10.0;    // nudger tip ahead of the sensor when retracted
 const double NUDGE_ANGLE = 40.0;         // elbow angle used for nudging (MEASURE)
 const double NUDGE_EXTRA_DEG = 20.0;     // keep pushing this far past first contact so the nudge is felt (TUNE)
-const int NUDGES_PER_ROUND = 3;          // 1 poke that finds the person + 2 more
 
 // Alarm: true = demo timing, where the clock-style "07:30" means 7 min 30 s
 // instead of 7 h 30 min. Set to false for real hours and minutes.
@@ -136,13 +135,15 @@ const int NUM_LANES = 6;                 // grass, 4 road lanes, grass
 const int LANE_W = 26;
 const int LANE_X0 = 2;                   // left margin so 6 lanes are centered
 const int PLAYER_SIZE = 10;
-const int PLAYER_Y = 49;
+const int PLAYER_START_Y = 49;           // player starts in the middle of the screen
+const int PLAYER_STEP = 12;              // pixels moved per up/down press (TUNE)
 const int CAR_W = 18;
 const int CAR_H = 20;
 const int NUM_CARS = 8;                  // 2 per road lane
 const int FRAME_MS = 40;
 const double IDLE_LIMIT_SEC = 20.0;
 const double SPEEDUP = 1.15;             // cars get 15% faster after each crossing
+const int GRASS_RGB = 0x2E7D32;          // darker green for the grass (hex RGB, used as color(GRASS_RGB))
 
 // ===========================================================================
 // DEVICES (ports are placeholders until measured)
@@ -468,29 +469,13 @@ int laneX(int lane) {
   return LANE_X0 + lane * LANE_W;
 }
 
-void setCarColor(int lane) {
-  if (lane == 1) {
-    Brain.Screen.setFillColor(red);
-    Brain.Screen.setPenColor(red);
-  } else if (lane == 2) {
-    Brain.Screen.setFillColor(yellow);
-    Brain.Screen.setPenColor(yellow);
-  } else if (lane == 3) {
-    Brain.Screen.setFillColor(orange);
-    Brain.Screen.setPenColor(orange);
-  } else {
-    Brain.Screen.setFillColor(purple);
-    Brain.Screen.setPenColor(purple);
-  }
-}
-
-void drawGame(Car cars[], int playerLane, int score, int rounds) {
+void drawGame(Car cars[], int playerLane, int playerY, int score, int rounds) {
   Brain.Screen.setFillColor(black);
   Brain.Screen.clearScreen();
 
-  // Grass on both sides
-  Brain.Screen.setFillColor(green);
-  Brain.Screen.setPenColor(green);
+  // Grass on both sides (a custom colour needs color(...); a bare number would be read as a hue)
+  Brain.Screen.setFillColor(color(GRASS_RGB));
+  Brain.Screen.setPenColor(color(GRASS_RGB));
   Brain.Screen.drawRectangle(0, 0, laneX(1), SCREEN_H);
   Brain.Screen.drawRectangle(laneX(NUM_LANES - 1), 0, SCREEN_W - laneX(NUM_LANES - 1), SCREEN_H);
 
@@ -500,9 +485,10 @@ void drawGame(Car cars[], int playerLane, int score, int rounds) {
     Brain.Screen.drawLine(laneX(lane), 0, laneX(lane), SCREEN_H);
   }
 
-  // Cars
+  // Cars (all red)
+  Brain.Screen.setFillColor(red);
+  Brain.Screen.setPenColor(red);
   for (int i = 0; i < NUM_CARS; i++) {
-    setCarColor(cars[i].lane);
     Brain.Screen.drawRectangle(laneX(cars[i].lane) + (LANE_W - CAR_W) / 2,
                                (int)cars[i].y, CAR_W, cars[i].height);
   }
@@ -510,11 +496,11 @@ void drawGame(Car cars[], int playerLane, int score, int rounds) {
   // Player
   Brain.Screen.setFillColor(cyan);
   Brain.Screen.setPenColor(cyan);
-  Brain.Screen.drawRectangle(laneX(playerLane) + (LANE_W - PLAYER_SIZE) / 2, PLAYER_Y,
+  Brain.Screen.drawRectangle(laneX(playerLane) + (LANE_W - PLAYER_SIZE) / 2, playerY,
                              PLAYER_SIZE, PLAYER_SIZE);
 
   // Score on the left grass, goal on the right grass
-  Brain.Screen.setFillColor(green);
+  Brain.Screen.setFillColor(color(GRASS_RGB));
   Brain.Screen.setPenColor(black);
   Brain.Screen.printAt(laneX(0) + 4, 18, "%d", score);
   Brain.Screen.printAt(laneX(NUM_LANES - 1) + 4, 18, "%d", rounds);
@@ -523,6 +509,8 @@ void drawGame(Car cars[], int playerLane, int score, int rounds) {
 }
 
 // Crossy road: cross the road `rounds` times without being hit.
+// Controls: check = step forward one lane, left = move up, right = move down.
+// There's no moving backwards: dodge cars by moving up or down in the lane.
 // Returns false on a crash or 20 s with no input.
 bool awakeCheck(int rounds) {
   waitForRelease();  // the press that started the game shouldn't move the player
@@ -556,9 +544,11 @@ bool awakeCheck(int rounds) {
   }
 
   int playerLane = 0;
+  int playerY = PLAYER_START_Y;
   int score = 0;
   bool prevLeft = Brain.buttonLeft.pressing();
   bool prevRight = Brain.buttonRight.pressing();
+  bool prevCheck = Brain.buttonCheck.pressing();
   timer idleTimer;
   idleTimer.clear();
 
@@ -569,18 +559,24 @@ bool awakeCheck(int rounds) {
     // Buttons: only a NEW press moves the player
     bool left = Brain.buttonLeft.pressing();
     bool right = Brain.buttonRight.pressing();
-    if (right && !prevRight) {
-      playerLane++;
+    bool check = Brain.buttonCheck.pressing();
+    if (check && !prevCheck) {
+      playerLane++;  // step forward one lane
       idleTimer.clear();
     }
     if (left && !prevLeft) {
-      if (playerLane > 0) {
-        playerLane--;
-      }
+      // up, but not off the top of the screen
+      playerY = (int)clampD(playerY - PLAYER_STEP, 0, SCREEN_H - PLAYER_SIZE);
+      idleTimer.clear();
+    }
+    if (right && !prevRight) {
+      // down, but not off the bottom of the screen
+      playerY = (int)clampD(playerY + PLAYER_STEP, 0, SCREEN_H - PLAYER_SIZE);
       idleTimer.clear();
     }
     prevLeft = left;
     prevRight = right;
+    prevCheck = check;
 
     // Reached the far grass
     if (playerLane >= NUM_LANES - 1) {
@@ -612,8 +608,8 @@ bool awakeCheck(int rounds) {
     bool hit = false;
     for (int i = 0; i < NUM_CARS; i++) {
       if (cars[i].lane == playerLane &&
-          cars[i].y < PLAYER_Y + PLAYER_SIZE &&
-          cars[i].y + cars[i].height > PLAYER_Y) {
+          cars[i].y < playerY + PLAYER_SIZE &&
+          cars[i].y + cars[i].height > playerY) {
         hit = true;
       }
     }
@@ -626,7 +622,7 @@ bool awakeCheck(int rounds) {
       gameOver = true;
     }
 
-    drawGame(cars, playerLane, score, rounds);
+    drawGame(cars, playerLane, playerY, score, rounds);
     if (gameOver) {
       wait(500, msec);  // show the final frame for a moment
     } else {
