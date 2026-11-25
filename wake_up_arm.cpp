@@ -77,7 +77,7 @@ using namespace vex;
 // Gear ratios
 const double BASE_RATIO = 112.0 / 12.0;  // motor deg per base deg
 const double ELBOW_RATIO = 48.0;         // motor deg per arm deg
-const double CM_PER_DEG = 0.0;           // MEASURE: spin carriage motor 360 deg, measure travel (cm), divide by 360
+const double CM_PER_DEG = 0.0144;           // MEASURE: spin carriage motor 360 deg, measure travel (cm), divide by 360
 
 // Motor ranges (MEASURE every one). Each is in the joint's own units, measured
 // from the home pose, where every encoder is zeroed. Every move is clamped to these.
@@ -86,9 +86,9 @@ const double BASE_MAX_DEG = 90.0;
 const double ELBOW_MIN_DEG = 0.0;        // arm degrees, 0 = home (arm up), + = down toward the bed
 const double ELBOW_MAX_DEG = 60.0;
 const double CARRIAGE_MIN_CM = 0.0;      // cm along the arm, 0 = fully pulled in
-const double CARRIAGE_MAX_CM = 25.0;
+const double CARRIAGE_MAX_CM = 18.8;
 const double NUDGER_MIN_DEG = 0.0;       // nudger motor degrees, 0 = retracted
-const double NUDGER_MAX_DEG = 120.0;
+const double NUDGER_MAX_DEG = 104.0;
 const double RANGE_OVERRUN_DEG = 10.0;   // base past its range by this much = stop (motor direction wrong)
 
 // Geometry and tuning (must sit inside the ranges above)
