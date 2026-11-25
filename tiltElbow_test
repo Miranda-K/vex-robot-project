@@ -64,6 +64,23 @@ void vexcodeInit() {
 //
 //----------------------------------------------------------------------------
 
+/*WHAT THIS CODE DOES
+In order, the test should:
+
+1. Show **Keep still / Calibrate** during startup. Put the arm at its physical 0° home position before running.
+2. Move to **10°** as setup; this move doesn’t display a test result.
+3. Move to **0°** and show its encoder reading and PASS/FAIL.
+4. Move to **20°** and show PASS/FAIL.
+5. Move to **40°**, then hold there for **3 seconds**. It shows PASS if it reached 40° and stayed within 2° during the hold.
+6. Return to **0°** and show PASS/FAIL.
+7. Receive a request above the maximum; it should clamp to **60°** and show the encoder reading and PASS/FAIL. This move may take several seconds.
+8. Prompt **Install safe / fixture, press CHECK**. Install a safe fixture to block the arm’s movement, then press and release **CHECK**. The test tries to move from 60° toward 55°:
+   - If it detects the obstruction, the display says **Elbow / jammed!**
+   - If the arm moves to 55° instead, it says **Jam test FAIL / Arm still moved**.
+9. Press **CHECK** again to stop the program.
+
+No button presses are needed during the automatic steps. If a jam is detected earlier than step 8, later tests are skipped.*/
+
 // Include the IQ Library
 #include "iq_cpp.h"
 
