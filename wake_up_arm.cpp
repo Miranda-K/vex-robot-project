@@ -107,7 +107,7 @@ const int CURRENT_IGNORE_MS = 200;       // ignore the current spike when a moto
 // Base control
 const bool USE_GYRO_FOR_BASE = true;     // false = use base motor encoder instead of the gyro
 const double BASE_TOLERANCE_DEG = 2.0;
-const double BASE_TIMEOUT_SEC = 5.0;
+const double BASE_TIMEOUT_SEC = 12.0;
 const double BASE_SLOW_ZONE_DEG = 10.0;  // slow down this far from the target so it doesn't overshoot
 const int BASE_SLOW_SPEED = 10;          // percent
 
