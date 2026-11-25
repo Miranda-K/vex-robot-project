@@ -63,7 +63,16 @@ void vexcodeInit() {
 //                  on the brain, then goes home.
 //
 //----------------------------------------------------------------------------
+/* WHAT THIS CODE DOES
+Before starting, align the base to your physical 0° mark and keep its full sweep area clear. The program scans from −90° to +90°, in 5° steps—37 positions per scan. At each position it waits 100 ms and reads the distance sensor.
 
+Startup: The program calibrates the inertial sensor and resets the device readings.
+Found-box test: The screen prompts Found test / Box: +30, 250mm. Put one box at +30° and 250 mm (25 cm) from the sensor, then press CHECK. The scan passes if it finds an object within 5° and 10 mm of those values. The result appears on screen.
+Empty-bed test: Press CHECK after the result, remove the boxes, and press CHECK at the Empty bed prompt. It passes if the scan returns NOT_FOUND and a distance of −1.
+Two-box test: After the empty-bed result, press CHECK. At the next prompt, place the nearer box at −30° and 150 mm (15 cm), and the farther one at +35° and 300 mm (30 cm). Press CHECK. It passes if the nearer box is selected within the same angle and distance tolerances.
+Out-of-range test: After that result, press CHECK. Put only one box at 500 mm (50 cm) from the sensor, then press CHECK at the prompt. Since the code’s maximum accepted distance is 400 mm, it should return NOT_FOUND and −1.
+Finish: After the last result, press CHECK. The screen says All tests PASS or Some tests FAIL, then press CHECK again to stop.
+Each scan takes a little while because the base moves through all 37 positions. If a base jam is detected, the program stops the remaining tests and leaves the jam message on screen.*/
 // Include the IQ Library
 #include "iq_cpp.h"
 
