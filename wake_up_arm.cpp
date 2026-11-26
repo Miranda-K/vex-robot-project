@@ -86,7 +86,7 @@ const double BASE_MAX_DEG = 90.0;
 const double ELBOW_MIN_DEG = -7.5;        // arm degrees, 0 = home (arm up), + = down toward the bed
 const double ELBOW_MAX_DEG = 27.0;
 const double CARRIAGE_MIN_CM = 0.0;      // cm along the arm, 0 = fully pulled in
-const double CARRIAGE_MAX_CM = 18.8;
+const double CARRIAGE_MAX_CM = 18.0;
 const double NUDGER_MIN_DEG = 0.0;       // nudger motor degrees, 0 = retracted
 const double NUDGER_MAX_DEG = 104.0;
 const double RANGE_OVERRUN_DEG = 10.0;   // base past its range by this much = stop (motor direction wrong)
