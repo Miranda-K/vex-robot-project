@@ -106,6 +106,8 @@ const double NUDGE_EXTRA_DEG = 20.0;     // keep pushing this far past first con
 // Alarm: true = demo timing, where the clock-style "07:30" means 7 min 30 s
 // instead of 7 h 30 min. Set to false for real hours and minutes.
 const bool DEMO_ALARM = true;
+const int ALARM_HOLD_MS = 1500;          // hold an arrow this long to start fast mode
+const int ALARM_REPEAT_MS = 400;         // in fast mode, jump by 5 this often
 
 // Motor safety: a jammed motor draws more current (class rule: keep it under 1 A)
 const double MAX_CURRENT_AMP = 2.0;
@@ -653,7 +655,45 @@ void startUp() {
   NudgerMotor.setMaxTorque(40, percent);
 }
 
+// Draws the alarm-setting screen
+void drawAlarmScreen(int hours, int minutes) {
+  Brain.Screen.setFillColor(black);
+  Brain.Screen.setPenColor(white);
+  Brain.Screen.clearScreen();
+  Brain.Screen.printAt(4, 20, "Set alarm");
+  Brain.Screen.printAt(4, 50, "%02d:%02d", hours, minutes);
+  Brain.Screen.printAt(4, 80, "<   > chk");
+  Brain.Screen.render();
+}
+
+// True while the arrow being adjusted (left or right) is still held
+bool arrowHeld(bool isLeft) {
+  if (isLeft) {
+    return Brain.buttonLeft.pressing();
+  }
+  return Brain.buttonRight.pressing();
+}
+
+// Changes the alarm: left changes the first number (wraps after 23), right
+// changes the second (wraps after 59). byFive = jump up to the next multiple
+// of 5 (07 -> 10 -> 15), otherwise add 1. hours and minutes are passed by reference.
+void stepAlarm(int &hours, int &minutes, bool isLeft, bool byFive) {
+  if (isLeft) {
+    hours = byFive ? (hours / 5 + 1) * 5 : hours + 1;
+    if (hours >= 24) {
+      hours = 0;  // past 23 always wraps to 00 (not 01 from 25)
+    }
+  } else {
+    minutes = byFive ? (minutes / 5 + 1) * 5 : minutes + 1;
+    if (minutes >= 60) {
+      minutes = 0;
+    }
+  }
+}
+
 // Left adds to the first number, right adds to the second, check confirms.
+// A quick press adds 1. Holding an arrow for ALARM_HOLD_MS starts fast mode:
+// it jumps by 5 every ALARM_REPEAT_MS until you let go.
 // The alarm shows like a clock, "07:30". With DEMO_ALARM that means 7 min 30 s,
 // otherwise 7 h 30 min. Returns seconds until the alarm (the brain has no
 // time-of-day clock).
@@ -664,24 +704,35 @@ int setAlarm() {
 
   waitForRelease();
   while (!confirmed) {
-    Brain.Screen.setFillColor(black);
-    Brain.Screen.setPenColor(white);
-    Brain.Screen.clearScreen();
-    Brain.Screen.printAt(4, 20, "Set alarm");
-    Brain.Screen.printAt(4, 50, "%02d:%02d", hours, minutes);
-    Brain.Screen.printAt(4, 80, "<   > chk");
-    Brain.Screen.render();
+    drawAlarmScreen(hours, minutes);
 
-    // Wait for a press, act on it, then wait for the release (so it counts once)
+    // Wait for a press
     while (!anyButtonPressed())
     {}
-    if (Brain.buttonLeft.pressing()) {
-      hours = (hours + 1) % 24;
-    } else if (Brain.buttonRight.pressing()) {
-      minutes = (minutes + 1) % 60;
-    } else if (Brain.buttonCheck.pressing()) {
+
+    if (Brain.buttonCheck.pressing()) {
       confirmed = true;
+    } else {
+      // An arrow: add 1 straight away
+      bool isLeft = Brain.buttonLeft.pressing();
+      stepAlarm(hours, minutes, isLeft, false);
+      drawAlarmScreen(hours, minutes);
+
+      // Still held after ALARM_HOLD_MS? Then jump by 5 every ALARM_REPEAT_MS
+      timer holdTimer;
+      holdTimer.clear();
+      while (arrowHeld(isLeft) && holdTimer.time(msec) < ALARM_HOLD_MS)
+      {}
+      while (arrowHeld(isLeft)) {
+        stepAlarm(hours, minutes, isLeft, true);
+        drawAlarmScreen(hours, minutes);
+        holdTimer.clear();
+        while (arrowHeld(isLeft) && holdTimer.time(msec) < ALARM_REPEAT_MS)
+        {}
+      }
     }
+
+    // Wait for every button to be released, so one press only counts once
     while (anyButtonPressed())
     {}
   }
@@ -847,7 +898,7 @@ int main() {
     while (!anyButtonPressed())
     {}
 
-    awake = awakeCheck(5);
+    awake = awakeCheck(3);
     if (!awake) {
       showMessage("Not awake", "Try again");
       wait(1500, msec);
