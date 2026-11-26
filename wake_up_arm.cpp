@@ -91,8 +91,15 @@ const double NUDGER_MIN_DEG = 0.0;       // nudger motor degrees, 0 = retracted
 const double NUDGER_MAX_DEG = 104.0;
 const double RANGE_OVERRUN_DEG = 10.0;   // base past its range by this much = stop (motor direction wrong)
 
-// Geometry and tuning (must sit inside the ranges above)
-const double SENSOR_TO_TIP_CM = 10.0;    // nudger tip ahead of the sensor when retracted
+// Where the distance sensor sits relative to the nudger, seen from above
+const double SENSOR_TO_TIP_CM = 6.0;     // nudger tip is this far ahead of the sensor, along the arm (carriage in)
+const double SENSOR_SIDE_CM = 8.0;       // sensor is this far to the side of the nudger's line.
+                                         // + = sensor on the robot's right (the way positive base angles turn).
+                                         // If the nudger ends up FURTHER from the head, flip the sign.
+const double SENSOR_FROM_PIVOT_CM = 12.0; // base's centre of rotation to the sensor's front, along the arm
+const double RAD_TO_DEG = 180.0 / 3.14159265;
+
+// Tuning (must sit inside the ranges above)
 const double NUDGE_ANGLE = 40.0;         // elbow angle used for nudging (MEASURE)
 const double NUDGE_EXTRA_DEG = 20.0;     // keep pushing this far past first contact so the nudge is felt (TUNE)
 

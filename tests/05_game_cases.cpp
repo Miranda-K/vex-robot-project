@@ -83,10 +83,10 @@ const double CM_PER_DEG = 0.0144;           // MEASURE: spin carriage motor 360 
 // from the home pose, where every encoder is zeroed. Every move is clamped to these.
 const double BASE_MIN_DEG = -90.0;       // base degrees, 0 = straight ahead (cables wrap past this)
 const double BASE_MAX_DEG = 90.0;
-const double ELBOW_MIN_DEG = 0.0;        // arm degrees, 0 = home (arm up), + = down toward the bed
-const double ELBOW_MAX_DEG = 60.0;
+const double ELBOW_MIN_DEG = -7.5;        // arm degrees, 0 = home (arm up), + = down toward the bed
+const double ELBOW_MAX_DEG = 27.0;
 const double CARRIAGE_MIN_CM = 0.0;      // cm along the arm, 0 = fully pulled in
-const double CARRIAGE_MAX_CM = 18.8;
+const double CARRIAGE_MAX_CM = 18.0;
 const double NUDGER_MIN_DEG = 0.0;       // nudger motor degrees, 0 = retracted
 const double NUDGER_MAX_DEG = 104.0;
 const double RANGE_OVERRUN_DEG = 10.0;   // base past its range by this much = stop (motor direction wrong)
@@ -96,7 +96,7 @@ const double SENSOR_TO_TIP_CM = 6.0;     // nudger tip is this far ahead of the 
 const double SENSOR_SIDE_CM = 8.0;       // sensor is this far to the side of the nudger's line.
                                          // + = sensor on the robot's right (the way positive base angles turn).
                                          // If the nudger ends up FURTHER from the head, flip the sign.
-const double SENSOR_FROM_PIVOT_CM = 10.0; // MEASURE: base's centre of rotation to the sensor's front, along the arm
+const double SENSOR_FROM_PIVOT_CM = 12.0; // base's centre of rotation to the sensor's front, along the arm
 const double RAD_TO_DEG = 180.0 / 3.14159265;
 
 // Tuning (must sit inside the ranges above)
@@ -108,7 +108,7 @@ const double NUDGE_EXTRA_DEG = 20.0;     // keep pushing this far past first con
 const bool DEMO_ALARM = true;
 
 // Motor safety: a jammed motor draws more current (class rule: keep it under 1 A)
-const double MAX_CURRENT_AMP = 1.0;
+const double MAX_CURRENT_AMP = 2.0;
 const int CURRENT_IGNORE_MS = 200;       // ignore the current spike when a motor first starts
 
 // Base control
@@ -757,7 +757,7 @@ void reachHead(int headAngle, int headMm, double &reachCm, bool &jammed) {
   rotateBase(headAngle + aimOffsetDeg(headMm), 30, jammed);
   if (jammed) return;
   reachCm = reachFor(headMm);
-  extendCarriage(reachCm, 40, jammed);
+  extendCarriage(reachCm, 25, jammed);
   if (jammed) return;
   tiltElbow(NUDGE_ANGLE, 50, jammed);
 }
