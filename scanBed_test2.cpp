@@ -896,7 +896,10 @@ bool recoverFromPush(int &headAngle, int &headMm, double &reachCm,
 //       "F30 248mm"  = found angle and distance from scanBed
 //       "at 30"      = where the base is pointing now
 //       "mm 251"     = live sensor reading right now
-//       "<  >  chk"  = left/right step the base 5 deg, check = next scan
+//       "<  >  chk"  = left/right step the base 5 deg, check = aim the nudger
+//     Then the base turns the extra amount reachHead() uses (the sensor is
+//     SENSOR_SIDE_CM to the side of the nudger), so the NUDGER points at the box:
+//       "Nudger aim" / "turn 13" (extra degrees) / "at 43" (base angle now) / "chk: next"
 //   - Found nothing: "Not found" / "chk: next"
 //
 //   Suggested scans                        Pass when
@@ -904,7 +907,11 @@ bool recoverFromPush(int &headAngle, int &headMm, double &reachCm,
 //       within range                        it points at the box (look along it). Live mm is
 //                                           within ~30 mm of the found mm. Stepping back one step
 //                                           (towards where it started) reads "none" or OUT of range
-//   2b. Same box on the other side          Sweeps further before stopping, points at the new spot
+//       ...then on "Nudger aim"             The NUDGER now points at the box. If it turned the
+//                                           wrong way (now further off), flip SENSOR_SIDE_CM to
+//                                           -8. If it turned the right way but not enough or too
+//                                           much, re-measure SENSOR_FROM_PIVOT_CM
+//   2b. Same box on the other side         Sweeps further before stopping, points at the new spot
 //   2c. Two boxes on opposite sides         Stops at the FIRST box it reaches (the one on the side
 //                                           the sweep starts from), not the second
 //   2d. No boxes                            Sweeps all the way across, then Not found
@@ -1022,6 +1029,24 @@ int main() {
           next = true;
         }
         wait(100, msec);
+      }
+
+      // Now turn the extra amount that reachHead() uses, so the NUDGER (which is
+      // SENSOR_SIDE_CM to the side of the sensor) points at the box
+      if (!jammed) {
+        double offset = aimOffsetDeg(foundMm);
+        rotateBase(foundAngle + offset, 20, jammed);
+        if (!jammed) {
+          Brain.Screen.setFillColor(black);
+          Brain.Screen.setPenColor(white);
+          Brain.Screen.clearScreen();
+          Brain.Screen.printAt(4, 20, "Nudger aim");
+          Brain.Screen.printAt(4, 45, "turn %d", (int)offset);
+          Brain.Screen.printAt(4, 70, "at %d", (int)baseAngle());
+          Brain.Screen.printAt(4, 95, "chk: next");
+          Brain.Screen.render();
+          waitForCheckPress();
+        }
       }
 
       if (!jammed) {
