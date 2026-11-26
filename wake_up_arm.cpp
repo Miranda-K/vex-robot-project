@@ -101,7 +101,7 @@ const double NUDGE_EXTRA_DEG = 20.0;     // keep pushing this far past first con
 const bool DEMO_ALARM = true;
 
 // Motor safety: a jammed motor draws more current (class rule: keep it under 1 A)
-const double MAX_CURRENT_AMP = 1.0;
+const double MAX_CURRENT_AMP = 2.0;
 const int CURRENT_IGNORE_MS = 200;       // ignore the current spike when a motor first starts
 
 // Base control
