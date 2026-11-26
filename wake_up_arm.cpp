@@ -83,8 +83,8 @@ const double CM_PER_DEG = 0.0144;           // MEASURE: spin carriage motor 360 
 // from the home pose, where every encoder is zeroed. Every move is clamped to these.
 const double BASE_MIN_DEG = -90.0;       // base degrees, 0 = straight ahead (cables wrap past this)
 const double BASE_MAX_DEG = 90.0;
-const double ELBOW_MIN_DEG = 0.0;        // arm degrees, 0 = home (arm up), + = down toward the bed
-const double ELBOW_MAX_DEG = 60.0;
+const double ELBOW_MIN_DEG = -7.5;        // arm degrees, 0 = home (arm up), + = down toward the bed
+const double ELBOW_MAX_DEG = 27.0;
 const double CARRIAGE_MIN_CM = 0.0;      // cm along the arm, 0 = fully pulled in
 const double CARRIAGE_MAX_CM = 18.8;
 const double NUDGER_MIN_DEG = 0.0;       // nudger motor degrees, 0 = retracted
@@ -93,7 +93,7 @@ const double RANGE_OVERRUN_DEG = 10.0;   // base past its range by this much = s
 
 // Geometry and tuning (must sit inside the ranges above)
 const double SENSOR_TO_TIP_CM = 10.0;    // nudger tip ahead of the sensor when retracted
-const double NUDGE_ANGLE = 40.0;         // elbow angle used for nudging (MEASURE)
+const double NUDGE_ANGLE = 27.0;         // elbow angle used for nudging (MEASURE)
 const double NUDGE_EXTRA_DEG = 20.0;     // keep pushing this far past first contact so the nudge is felt (TUNE)
 
 // Alarm: true = demo timing, where the clock-style "07:30" means 7 min 30 s
