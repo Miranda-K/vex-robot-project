@@ -749,7 +749,7 @@ void reachHead(int headAngle, int headMm, double &reachCm, bool &jammed) {
   rotateBase(headAngle, 30, jammed);
   if (jammed) return;
   reachCm = reachFor(headMm);
-  extendCarriage(reachCm, 40, jammed);
+  extendCarriage(reachCm, 25, jammed);
   if (jammed) return;
   tiltElbow(NUDGE_ANGLE, 50, jammed);
 }
