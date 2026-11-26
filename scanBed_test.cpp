@@ -446,6 +446,19 @@ int scanBed(int &closestMm, bool &jammed) {
       if (HeadSensor.isObjectDetected()) {
         scanDist[step] = (int)HeadSensor.objectDistance(mm);
       }
+
+      // TEST ONLY: show this step's angle and distance reading on the screen
+      Brain.Screen.setFillColor(black);
+      Brain.Screen.setPenColor(white);
+      Brain.Screen.clearScreen();
+      Brain.Screen.printAt(4, 25, "Scanning");
+      Brain.Screen.printAt(4, 55, "ang %d", angle);
+      if (scanDist[step] == -1) {
+        Brain.Screen.printAt(4, 85, "mm none");
+      } else {
+        Brain.Screen.printAt(4, 85, "mm %d", scanDist[step]);
+      }
+      Brain.Screen.render();
     }
     step++;
   }
@@ -473,22 +486,24 @@ int scanBed(int &closestMm, bool &jammed) {
 }
 
 // Temporary scanBed test helpers
+// Waits for check to be pressed and released (empty polling loops, class style)
 void waitForScanCheck() {
-  while (!Brain.buttonCheck.pressing()) {
-    wait(10, msec);
-  }
-  while (Brain.buttonCheck.pressing()) {
-    wait(10, msec);
-  }
+  while (!Brain.buttonCheck.pressing())
+  {}
+  while (Brain.buttonCheck.pressing())
+  {}
 }
 
+// Result screen, max 10 characters per line: test name, angle, distance, PASS/FAIL
 void showScanTestResult(const char *name, int angleDeg,
                         int distanceMm, bool passed) {
+  Brain.Screen.setFillColor(black);
+  Brain.Screen.setPenColor(white);
   Brain.Screen.clearScreen();
   Brain.Screen.printAt(4, 20, false, "%s", name);
-  Brain.Screen.printAt(4, 45, false, "Angle: %d deg", angleDeg);
-  Brain.Screen.printAt(4, 70, false, "Distance: %d mm", distanceMm);
-  Brain.Screen.printAt(4, 95, false, "%s", passed ? "PASS" : "FAIL");
+  Brain.Screen.printAt(4, 45, "ang %d", angleDeg);
+  Brain.Screen.printAt(4, 70, "mm %d", distanceMm);
+  Brain.Screen.printAt(4, 95, passed ? "PASS" : "FAIL");
   Brain.Screen.render();
 }
 
@@ -878,32 +893,39 @@ int main() {
 
   startUp();
 
+  // Screen text is max 10 characters per line. Each setup screen shows where to
+  // put the box(es); press check to start that scan.
+
   // Test 1: one box at +30 degrees, 250 mm (25 cm) from the sensor.
-  if (!runScanBedTest("Found test", "Box: +30, 250mm",
+  // Screen: "Box +30deg" / "at 250mm"
+  if (!runScanBedTest("Box +30deg", "at 250mm",
                       "Found box", 30, 250, false, jammed)) {
     allPassed = false;
   }
 
   // Test 2: clear the scan area of objects within the sensor's scan range.
+  // Screen: "Empty bed" / "No boxes"
   if (!jammed &&
-      !runScanBedTest("Empty bed", "Remove all boxes",
-                      "Empty test", 0, 0, true, jammed)) {
+      !runScanBedTest("Empty bed", "No boxes",
+                      "Empty bed", 0, 0, true, jammed)) {
     allPassed = false;
   }
 
   // Test 3: put the nearer box at -30 degrees and 150 mm;
   // put the farther box at +35 degrees and 300 mm.
+  // Screen: "-30 150mm" (near box) / "+35 300mm" (far box)
   if (!jammed &&
-      !runScanBedTest("Two boxes", "Near -30, 150mm",
-                      "Closest box", -30, 150, false, jammed)) {
+      !runScanBedTest("-30 150mm", "+35 300mm",
+                      "Closest", -30, 150, false, jammed)) {
     allPassed = false;
   }
 
   // Test 4: place only one box at 50 cm (500 mm).
   // It is beyond MAX_HEAD_MM and should be ignored.
+  // Screen: "Box only" / "at 50cm"
   if (!jammed &&
-      !runScanBedTest("Out of range", "Box only at 50cm",
-                      "50cm ignored", 0, 0, true, jammed)) {
+      !runScanBedTest("Box only", "at 50cm",
+                      "Far ignore", 0, 0, true, jammed)) {
     allPassed = false;
   }
 
@@ -911,8 +933,7 @@ int main() {
     // scanBed has already displayed its base-jam message.
     waitForScanCheck();
   } else {
-    showMessage(allPassed ? "All tests PASS" : "Some tests FAIL",
-                "Press CHECK to stop");
+    showMessage(allPassed ? "All PASS" : "Some FAIL", "chk: stop");
     waitForScanCheck();
   }
 
