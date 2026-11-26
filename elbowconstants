@@ -1,0 +1,50 @@
+int main() {
+  vexcodeInit();
+
+  // Start with the arm at HOME (pulled up, 0 deg). That spot becomes 0.
+  ElbowMotor.setPosition(0, degrees);
+  ElbowMotor.setStopping(hold);
+  ElbowMotor.setMaxTorque(50, percent);
+
+  const int JOG_SPEED = 15;   // slow, so you can stop before the end
+  double minArm = 0;
+  double maxArm = 0;
+  bool done = false;
+
+  // Hold right = arm down toward the bed, hold left = arm up, let go = stop.
+  // Press left and right together to finish.
+  while (!done) {
+    bool right = Brain.buttonRight.pressing();
+    bool left = Brain.buttonLeft.pressing();
+
+    if (right && left) {
+      done = true;
+    } else if (right) {
+      ElbowMotor.spin(forward, JOG_SPEED, percent);
+    } else if (left) {
+      ElbowMotor.spin(reverse, JOG_SPEED, percent);
+    } else {
+      ElbowMotor.stop(hold);
+    }
+
+    double motorDeg = ElbowMotor.position(degrees);
+    double armDeg = motorDeg / ELBOW_RATIO;
+    if (armDeg > maxArm) maxArm = armDeg;
+    if (armDeg < minArm) minArm = armDeg;
+
+    Brain.Screen.setFillColor(black);
+    Brain.Screen.setPenColor(white);
+    Brain.Screen.clearScreen();
+Brain.Screen.printAt(4, 20, "motor %6.0f", motorDeg);
+Brain.Screen.printAt(4, 40, "arm %6.1f", armDeg);
+Brain.Screen.printAt(4, 60, "max %6.1f", maxArm);
+Brain.Screen.printAt(4, 80, "min %6.1f", minArm);
+Brain.Screen.printAt(4, 100, "A %.2f", ElbowMotor.current(amp));
+    Brain.Screen.render();
+    wait(50, msec);
+  }
+
+  ElbowMotor.stop(hold);
+  Brain.programStop();
+  return 0;
+}
