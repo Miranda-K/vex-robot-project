@@ -115,7 +115,7 @@ const int BASE_SLOW_SPEED = 10;          // percent
 const int SCAN_DEG = 90;                 // sweep from -SCAN_DEG to +SCAN_DEG
 const int SCAN_STEP_DEG = 5;
 const int SCAN_STEPS = 2 * SCAN_DEG / SCAN_STEP_DEG + 1;  // 37 readings
-const int MIN_HEAD_MM = 50;              // ignore readings outside the bed range (MEASURE)
+const int MIN_HEAD_MM = 150;              // ignore readings outside the bed range (MEASURE)
 const int MAX_HEAD_MM = 400;
 const int NOT_FOUND = -999;
 
