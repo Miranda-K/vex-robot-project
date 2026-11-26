@@ -22,8 +22,8 @@ The same need applies to students with roommates who want a silent, physical ala
 1. **Start up.** The robot starts in its home pose (base straight, elbow up, carriage pulled in). It calibrates the gyro and zeroes every motor encoder.
 2. **Set the alarm.** On the brain, left adds to the first number, right adds to the second, and check confirms. In demo mode "07:30" means 7 min 30 s instead of 7 h 30 min.
 3. **Wait.** A countdown runs on the screen using a timer.
-4. **Find the head.** The base sweeps from −90° to +90° in 5° steps and takes a distance reading at each one. It picks the closest reading inside the bed range.
-5. **Reach.** The base turns to that angle, the carriage slides out to match the distance, and the elbow tilts down.
+4. **Find the head.** The base sweeps from −90° to +90° in 5° steps, taking a distance reading at each one. It stops at the first object inside the bed range, which it takes to be the head.
+5. **Reach.** The distance sensor sits 8 cm to the side of the nudger, so the base turns a little past the angle where the sensor saw the head, until the nudger lines up with it. The carriage then slides out to match the distance, and the elbow tilts down.
 6. **Nudge.** The nudger pokes until the bumper confirms contact, pushes a little further so the nudge is felt, then pulls back. If a poke misses, the carriage moves 1 cm closer and tries again.
 7. **Prove you're awake.** Pressing any brain button starts the crossy road game. Losing, or not pressing anything for 20 s, goes back to nudging.
 8. **Shut down.** After a win, the carriage pulls in, the elbow lifts, and the base turns back to 0, in that order, so the arm never swings across the bed while extended. The program ends itself, with no need for the stop button.
@@ -106,7 +106,7 @@ Written in VEXcode IQ C++ for the 2nd generation IQ brain.
 | Function | What it does | Returns | Author |
 | --- | --- | --- | --- |
 | `rotateBase(double targetDeg, int speed, bool &jammed)` | Turns the base to an angle using the gyro, fast then slow near the target | nothing (jam passed back by reference) | Cynthia |
-| `scanBed(int &closestMm, bool &jammed)` | Sweeps the base, stores 37 readings in an array, finds the closest object in bed range | angle of the head (distance by reference) | Cynthia |
+| `scanBed(int &headMm, bool &jammed)` | Sweeps the base and stops at the first object in bed range | angle of the head (distance by reference) | Cynthia |
 | `tiltElbow(double targetDeg, int speed, bool &jammed)` | Tilts the arm to an angle using the motor encoder | nothing | Rinko |
 | `extendCarriage(double cm, int speed, bool &jammed)` | Slides the carriage to a position in cm along the arm | nothing | Rinko |
 | `nudge(int times, int speed, bool &buttonRequested, bool &pushDetected)` | Pokes until the bumper touches, pushes a bit further, pulls back | number of pokes that touched | Ridhikka |
@@ -116,8 +116,7 @@ Written in VEXcode IQ C++ for the 2nd generation IQ brain.
  
 - **Constants:** gear ratios, measured motion limits, speeds and timeouts sit at the top of the file, so tuning means changing one number.
 - **No global variables:** `main()` owns the program's state (jam flag, head angle and distance, carriage reach) and passes it to functions by reference.
-- **Array:** `scanBed()` stores one distance reading per 5° step.
-- **Struct:** each car in the game is a `Car` with a position, lane, height and speed. The cars are kept in an array.
+- **Struct and array:** each car in the game is a `Car` with a position, lane, height and speed. The 8 cars are kept in an array, `Car cars[8]`.
 - **Safety:** every move checks a timeout and the motor current, and every target is clamped to the measured range of that joint.
 ### Crossy road game
  

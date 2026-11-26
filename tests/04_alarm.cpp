@@ -77,7 +77,7 @@ using namespace vex;
 // Gear ratios
 const double BASE_RATIO = 112.0 / 12.0;  // motor deg per base deg
 const double ELBOW_RATIO = 48.0;         // motor deg per arm deg
-const double CM_PER_DEG = 0.0;           // MEASURE: spin carriage motor 360 deg, measure travel (cm), divide by 360
+const double CM_PER_DEG = 0.0144;           // MEASURE: spin carriage motor 360 deg, measure travel (cm), divide by 360
 
 // Motor ranges (MEASURE every one). Each is in the joint's own units, measured
 // from the home pose, where every encoder is zeroed. Every move is clamped to these.
@@ -86,13 +86,20 @@ const double BASE_MAX_DEG = 90.0;
 const double ELBOW_MIN_DEG = 0.0;        // arm degrees, 0 = home (arm up), + = down toward the bed
 const double ELBOW_MAX_DEG = 60.0;
 const double CARRIAGE_MIN_CM = 0.0;      // cm along the arm, 0 = fully pulled in
-const double CARRIAGE_MAX_CM = 25.0;
+const double CARRIAGE_MAX_CM = 18.8;
 const double NUDGER_MIN_DEG = 0.0;       // nudger motor degrees, 0 = retracted
-const double NUDGER_MAX_DEG = 120.0;
+const double NUDGER_MAX_DEG = 104.0;
 const double RANGE_OVERRUN_DEG = 10.0;   // base past its range by this much = stop (motor direction wrong)
 
-// Geometry and tuning (must sit inside the ranges above)
-const double SENSOR_TO_TIP_CM = 10.0;    // nudger tip ahead of the sensor when retracted
+// Where the distance sensor sits relative to the nudger, seen from above
+const double SENSOR_TO_TIP_CM = 6.0;     // nudger tip is this far ahead of the sensor, along the arm (carriage in)
+const double SENSOR_SIDE_CM = 8.0;       // sensor is this far to the side of the nudger's line.
+                                         // + = sensor on the robot's right (the way positive base angles turn).
+                                         // If the nudger ends up FURTHER from the head, flip the sign.
+const double SENSOR_FROM_PIVOT_CM = 10.0; // MEASURE: base's centre of rotation to the sensor's front, along the arm
+const double RAD_TO_DEG = 180.0 / 3.14159265;
+
+// Tuning (must sit inside the ranges above)
 const double NUDGE_ANGLE = 40.0;         // elbow angle used for nudging (MEASURE)
 const double NUDGE_EXTRA_DEG = 20.0;     // keep pushing this far past first contact so the nudge is felt (TUNE)
 
@@ -107,7 +114,7 @@ const int CURRENT_IGNORE_MS = 200;       // ignore the current spike when a moto
 // Base control
 const bool USE_GYRO_FOR_BASE = true;     // false = use base motor encoder instead of the gyro
 const double BASE_TOLERANCE_DEG = 2.0;
-const double BASE_TIMEOUT_SEC = 5.0;
+const double BASE_TIMEOUT_SEC = 12.0;
 const double BASE_SLOW_ZONE_DEG = 10.0;  // slow down this far from the target so it doesn't overshoot
 const int BASE_SLOW_SPEED = 10;          // percent
 
@@ -115,7 +122,7 @@ const int BASE_SLOW_SPEED = 10;          // percent
 const int SCAN_DEG = 90;                 // sweep from -SCAN_DEG to +SCAN_DEG
 const int SCAN_STEP_DEG = 5;
 const int SCAN_STEPS = 2 * SCAN_DEG / SCAN_STEP_DEG + 1;  // 37 readings
-const int MIN_HEAD_MM = 50;              // ignore readings outside the bed range (MEASURE)
+const int MIN_HEAD_MM = 150;              // ignore readings outside the bed range (MEASURE)
 const int MAX_HEAD_MM = 400;
 const int NOT_FOUND = -999;
 
@@ -416,49 +423,34 @@ int nudge(int times, int speed, bool &buttonRequested, bool &pushDetected) {
   return hits;
 }
 
-// Sweeps the base and finds the closest object in bed range.
-// Returns its angle and sets closestMm (by reference); NOT_FOUND and -1 if nothing.
-int scanBed(int &closestMm, bool &jammed) {
-  int scanDist[SCAN_STEPS];
+// Sweeps the base from -SCAN_DEG to +SCAN_DEG in SCAN_STEP_DEG steps and stops
+// at the FIRST object inside the bed range (MIN_HEAD_MM to MAX_HEAD_MM), which
+// is assumed to be the head. The base is left pointing at it.
+// Returns its angle and sets headMm (by reference); NOT_FOUND and -1 if nothing
+// was in range anywhere in the sweep.
+int scanBed(int &headMm, bool &jammed) {
+  int headAngle = NOT_FOUND;
+  headMm = -1;
+  bool found = false;
 
-  // Start every reading as "nothing seen", so a jam part-way leaves no garbage
-  for (int i = 0; i < SCAN_STEPS; i++) {
-    scanDist[i] = -1;
-  }
-
-  // Sweep, stopping early (via the loop condition) if the base jams
+  // Keep sweeping until something in range is seen, the sweep ends, or the base jams
   showMessage("Scanning", "");
   int step = 0;
-  while (step < SCAN_STEPS && !jammed) {
+  while (step < SCAN_STEPS && !found && !jammed) {
     int angle = -SCAN_DEG + step * SCAN_STEP_DEG;
     rotateBase(angle, 30, jammed);
     if (!jammed) {
       wait(100, msec);  // let the sensor settle
       if (HeadSensor.isObjectDetected()) {
-        scanDist[step] = (int)HeadSensor.objectDistance(mm);
-      }
-    }
-    step++;
-  }
-
-  // Search the array for the closest reading inside the bed range
-  int bestIndex = -1;
-  if (!jammed) {
-    for (int i = 0; i < SCAN_STEPS; i++) {
-      int d = scanDist[i];
-      if (d >= MIN_HEAD_MM && d <= MAX_HEAD_MM) {
-        if (bestIndex == -1 || d < scanDist[bestIndex]) {
-          bestIndex = i;
+        int d = (int)HeadSensor.objectDistance(mm);
+        if (d >= MIN_HEAD_MM && d <= MAX_HEAD_MM) {
+          found = true;  // ends the loop: the base stays pointing at the head
+          headAngle = angle;
+          headMm = d;
         }
       }
     }
-  }
-
-  int headAngle = NOT_FOUND;
-  closestMm = -1;
-  if (bestIndex != -1) {
-    closestMm = scanDist[bestIndex];
-    headAngle = -SCAN_DEG + bestIndex * SCAN_STEP_DEG;
+    step++;
   }
   return headAngle;
 }
@@ -721,10 +713,24 @@ void waitForAlarm(int seconds) {
   showMessage("WAKE UP!", "");
 }
 
-// How far to extend the carriage for a head measured at distanceMm.
+// The sensor is SENSOR_SIDE_CM to the side of the nudger, so when the sensor
+// points at the head, the nudger points beside it. This is the extra base turn
+// (degrees) that lines the NUDGER up with the head instead.
+// Seen from above, with the base's centre of rotation at (0, 0) and the arm
+// pointing along x: the head is at (SENSOR_FROM_PIVOT_CM + distance, SENSOR_SIDE_CM).
+double aimOffsetDeg(int headMm) {
+  double headAlongArm = SENSOR_FROM_PIVOT_CM + headMm / 10.0;
+  return atan2(SENSOR_SIDE_CM, headAlongArm) * RAD_TO_DEG;
+}
+
+// How far to extend the carriage for a head the sensor measured at distanceMm,
+// once the base has turned so the nudger points at it (see aimOffsetDeg).
 // The 2 cm margin stops it just short, since tilting the elbow moves the tip further.
 double reachFor(int distanceMm) {
-  double cm = distanceMm / 10.0 - SENSOR_TO_TIP_CM - 2;
+  double headAlongArm = SENSOR_FROM_PIVOT_CM + distanceMm / 10.0;
+  double pivotToHead = sqrt(headAlongArm * headAlongArm + SENSOR_SIDE_CM * SENSOR_SIDE_CM);
+  double pivotToTip = SENSOR_FROM_PIVOT_CM + SENSOR_TO_TIP_CM;  // tip with the carriage pulled in
+  double cm = pivotToHead - pivotToTip - 2;
   return clampD(cm, CARRIAGE_MIN_CM, CARRIAGE_MAX_CM);
 }
 
@@ -745,8 +751,10 @@ void stopForJam() {
 }
 
 // Moves to the head: base, then carriage, then elbow.
+// headAngle is where the SENSOR saw the head; the base turns a little further
+// (aimOffsetDeg) so the NUDGER points at it.
 void reachHead(int headAngle, int headMm, double &reachCm, bool &jammed) {
-  rotateBase(headAngle, 30, jammed);
+  rotateBase(headAngle + aimOffsetDeg(headMm), 30, jammed);
   if (jammed) return;
   reachCm = reachFor(headMm);
   extendCarriage(reachCm, 40, jammed);
@@ -771,7 +779,8 @@ bool recoverFromPush(int &headAngle, int &headMm, double &reachCm,
   while (NudgeBumper.pressing() && letGo.time(seconds) < 10)
   {}
 
-  // Base: use the gyro, since a push can back-drive the base gears
+  // Base: turn so the SENSOR points at the saved head angle again, to check
+  // whether the person moved. Use the gyro, since a push can back-drive the gears.
   if (fabs(baseAngle() - headAngle) > PUSH_ANGLE_TOL_DEG) {
     rotateBase(headAngle, 20, jammed);
     if (jammed) return true;
@@ -801,7 +810,11 @@ bool recoverFromPush(int &headAngle, int &headMm, double &reachCm,
     headMm = newMm;
     reachHead(headAngle, headMm, reachCm, jammed);
   } else {
-    extendCarriage(reachCm, 30, jammed);
+    // Same place: turn the nudger (not the sensor) back onto the head, then reach
+    rotateBase(headAngle + aimOffsetDeg(headMm), 20, jammed);
+    if (!jammed) {
+      extendCarriage(reachCm, 30, jammed);
+    }
   }
   showMessage("WAKE UP!", "");
   return true;
