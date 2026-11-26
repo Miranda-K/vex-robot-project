@@ -899,7 +899,10 @@ bool recoverFromPush(int &headAngle, int &headMm, double &reachCm,
 //       "<  >  chk"  = left/right step the base 5 deg, check = aim the nudger
 //     Then the base turns the extra amount reachHead() uses (the sensor is
 //     SENSOR_SIDE_CM to the side of the nudger), so the NUDGER points at the box:
-//       "Nudger aim" / "turn 13" (extra degrees) / "at 43" (base angle now) / "chk: next"
+//       "Nudger aim" / "turn 13" (extra degrees) / "side 8.0" / "<  >  chk"
+//     Left/right move the base 1 degree at a time. Line it up so the nudger points
+//     at the MIDDLE of the box; "side" then shows the SENSOR_SIDE_CM that would make
+//     the code turn exactly that much. Check = next scan.
 //   - Found nothing: "Not found" / "chk: next"
 //
 //   Suggested scans                        Pass when
@@ -907,10 +910,9 @@ bool recoverFromPush(int &headAngle, int &headMm, double &reachCm,
 //       within range                        it points at the box (look along it). Live mm is
 //                                           within ~30 mm of the found mm. Stepping back one step
 //                                           (towards where it started) reads "none" or OUT of range
-//       ...then on "Nudger aim"             The NUDGER now points at the box. If it turned the
-//                                           wrong way (now further off), flip SENSOR_SIDE_CM to
-//                                           -8. If it turned the right way but not enough or too
-//                                           much, re-measure SENSOR_FROM_PIVOT_CM
+//       ...then on "Nudger aim"             The NUDGER points at the box. If not, use left/right
+//                                           until it does and write down "side". Do this for 2-3
+//                                           box distances and set SENSOR_SIDE_CM to the average
 //   2b. Same box on the other side         Sweeps further before stopping, points at the new spot
 //   2c. Two boxes on opposite sides         Stops at the FIRST box it reaches (the one on the side
 //                                           the sweep starts from), not the second
@@ -1033,19 +1035,42 @@ int main() {
 
       // Now turn the extra amount that reachHead() uses, so the NUDGER (which is
       // SENSOR_SIDE_CM to the side of the sensor) points at the box
+      // Then fine-tune: left/right move the base 1 degree until the nudger lines up
+      // exactly. The screen shows the SENSOR_SIDE_CM value that would give that turn.
       if (!jammed) {
         double offset = aimOffsetDeg(foundMm);
         rotateBase(foundAngle + offset, 20, jammed);
-        if (!jammed) {
+        double headAlongArm = SENSOR_FROM_PIVOT_CM + foundMm / 10.0;
+
+        bool done = false;
+        while (!done && !jammed) {
+          // SENSOR_SIDE_CM that makes aimOffsetDeg() equal this turn
+          double sideCm = tan(offset / RAD_TO_DEG) * headAlongArm;
           Brain.Screen.setFillColor(black);
           Brain.Screen.setPenColor(white);
           Brain.Screen.clearScreen();
           Brain.Screen.printAt(4, 20, "Nudger aim");
-          Brain.Screen.printAt(4, 45, "turn %d", (int)offset);
-          Brain.Screen.printAt(4, 70, "at %d", (int)baseAngle());
-          Brain.Screen.printAt(4, 95, "chk: next");
+          Brain.Screen.printAt(4, 45, "turn %d", (int)(offset + (offset < 0 ? -0.5 : 0.5)));
+          Brain.Screen.printAt(4, 70, "side %.1f", sideCm);
+          Brain.Screen.printAt(4, 95, "<  >  chk");
           Brain.Screen.render();
-          waitForCheckPress();
+
+          if (Brain.buttonLeft.pressing()) {
+            offset = offset - 1;
+            while (Brain.buttonLeft.pressing())
+            {}
+            rotateBase(foundAngle + offset, 15, jammed);
+          } else if (Brain.buttonRight.pressing()) {
+            offset = offset + 1;
+            while (Brain.buttonRight.pressing())
+            {}
+            rotateBase(foundAngle + offset, 15, jammed);
+          } else if (Brain.buttonCheck.pressing()) {
+            while (Brain.buttonCheck.pressing())
+            {}
+            done = true;
+          }
+          wait(100, msec);
         }
       }
 
