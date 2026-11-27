@@ -927,7 +927,7 @@ int main() {
 
       if (!jammed && (buttonRequested || anyButtonPressed())) {
         buttonRequested = false;
-        awake = awakeCheck(3);
+        awake = awakeCheck(1);
         if (!awake) {
           showMessage("Not awake", "Try again");
           wait(1500, msec);
