@@ -684,6 +684,9 @@ void startUp() {
   CarriageMotor.setMaxTorque(50, percent);
   NudgerMotor.setMaxTorque(40, percent);
 }
+showMessage("Calibrated", "Press check");
+while (!Brain.buttonCheck.pressing())
+{}
 
 // Draws the alarm-setting screen
 void drawAlarmScreen(int hours, int minutes) {
