@@ -83,7 +83,8 @@ const double CM_PER_DEG = 0.0144;           // MEASURE: spin carriage motor 360 
 // from the home pose, where every encoder is zeroed. Every move is clamped to these.
 const double BASE_MIN_DEG = -90.0;       // base degrees, 0 = straight ahead (cables wrap past this)
 const double BASE_MAX_DEG = 90.0;
-const double ELBOW_MIN_DEG = -7.5;        // arm degrees, 0 = home (arm up), + = down toward the bed
+const double ELBOW_MIN_DEG = -7.5;       // arm degrees, 0 = home (where the arm is at start-up),
+                                         // - = up, + = down toward the bed
 const double ELBOW_MAX_DEG = 27.0;
 const double CARRIAGE_MIN_CM = 0.0;      // cm along the arm, 0 = fully pulled in
 const double CARRIAGE_MAX_CM = 18.0;
@@ -100,7 +101,8 @@ const double SENSOR_FROM_PIVOT_CM = 12.0; // base's centre of rotation to the se
 const double RAD_TO_DEG = 180.0 / 3.14159265;
 
 // Tuning (must sit inside the ranges above)
-const double NUDGE_ANGLE = 40.0;         // elbow angle used for nudging (MEASURE)
+const double ELBOW_UP_DEG = ELBOW_MIN_DEG; // arm tilted up while the base scans and turns (TUNE)
+const double NUDGE_ANGLE = 15.0;         // arm tilted down this far before the carriage extends (TUNE)
 const double NUDGE_EXTRA_DEG = 20.0;     // keep pushing this far past first contact so the nudge is felt (TUNE)
 
 // Alarm: true = demo timing, where the clock-style "07:30" means 7 min 30 s
@@ -123,7 +125,6 @@ const int BASE_SLOW_SPEED = 10;          // percent
 // Head scan
 const int SCAN_DEG = 90;                 // sweep from -SCAN_DEG to +SCAN_DEG
 const int SCAN_STEP_DEG = 5;
-const int SCAN_STEPS = 2 * SCAN_DEG / SCAN_STEP_DEG + 1;  // 37 readings
 const int MIN_HEAD_MM = 150;              // ignore readings outside the bed range (MEASURE)
 const int MAX_HEAD_MM = 400;
 const int NOT_FOUND = -999;
@@ -425,34 +426,63 @@ int nudge(int times, int speed, bool &buttonRequested, bool &pushDetected) {
   return hits;
 }
 
-// Sweeps the base from -SCAN_DEG to +SCAN_DEG in SCAN_STEP_DEG steps and stops
-// at the FIRST object inside the bed range (MIN_HEAD_MM to MAX_HEAD_MM), which
-// is assumed to be the head. The base is left pointing at it.
-// Returns its angle and sets headMm (by reference); NOT_FOUND and -1 if nothing
-// was in range anywhere in the sweep.
-int scanBed(int &headMm, bool &jammed) {
-  int headAngle = NOT_FOUND;
+// Sweeps the base from startDeg towards +SCAN_DEG in SCAN_STEP_DEG steps and
+// finds the FIRST object inside the bed range (MIN_HEAD_MM to MAX_HEAD_MM),
+// which is assumed to be the head. It keeps turning across the object until the
+// readings leave the range (its far edge), then turns back to the MIDDLE of it,
+// so the aim isn't thrown off by stopping at the object's first edge.
+// skipCurrent = true: the sensor is on something that turned out NOT to be the
+// head, so first turn past that object and only use the NEXT one.
+// Returns the angle of the middle of the object (the sensor is left pointing
+// there) and sets headMm (by reference) to its closest reading.
+// NOT_FOUND and -1 if nothing was in range before the end of the sweep.
+int scanBed(int startDeg, bool skipCurrent, int &headMm, bool &jammed) {
   headMm = -1;
-  bool found = false;
+  bool pastCurrent = !skipCurrent;  // true once we've turned past the skipped object
+  bool onObject = false;            // true while the readings are on the object
+  bool passedObject = false;        // true once we've reached its far edge
+  int firstAngle = NOT_FOUND;       // angles where the object starts and ends
+  int lastAngle = NOT_FOUND;
 
-  // Keep sweeping until something in range is seen, the sweep ends, or the base jams
+  // Keep sweeping until we're past the object, the sweep ends, or the base jams
   showMessage("Scanning", "");
-  int step = 0;
-  while (step < SCAN_STEPS && !found && !jammed) {
-    int angle = -SCAN_DEG + step * SCAN_STEP_DEG;
+  int angle = startDeg;
+  while (angle <= SCAN_DEG && !passedObject && !jammed) {
     rotateBase(angle, 30, jammed);
     if (!jammed) {
       wait(100, msec);  // let the sensor settle
+      int d = -1;
       if (HeadSensor.isObjectDetected()) {
-        int d = (int)HeadSensor.objectDistance(mm);
-        if (d >= MIN_HEAD_MM && d <= MAX_HEAD_MM) {
-          found = true;  // ends the loop: the base stays pointing at the head
-          headAngle = angle;
-          headMm = d;
+        d = (int)HeadSensor.objectDistance(mm);
+      }
+      bool inRange = (d >= MIN_HEAD_MM && d <= MAX_HEAD_MM);
+      if (!inRange) {
+        pastCurrent = true;  // a gap: anything in range after this is a new object
+        if (onObject) {
+          passedObject = true;  // far edge reached: ends the loop
+        }
+      } else if (pastCurrent) {
+        if (!onObject) {
+          onObject = true;
+          firstAngle = angle;
+        }
+        lastAngle = angle;
+        if (headMm == -1 || d < headMm) {
+          headMm = d;  // closest point of the object, so the reach stops short
         }
       }
     }
-    step++;
+    angle += SCAN_STEP_DEG;
+  }
+
+  // Point the sensor at the middle of the object
+  int headAngle = NOT_FOUND;
+  if (onObject && !jammed) {
+    headAngle = (firstAngle + lastAngle) / 2;
+    rotateBase(headAngle, 30, jammed);
+  }
+  if (headAngle == NOT_FOUND) {
+    headMm = -1;
   }
   return headAngle;
 }
@@ -699,7 +729,7 @@ void stepAlarm(int &hours, int &minutes, bool isLeft, bool byFive) {
 // time-of-day clock).
 int setAlarm() {
   int hours = 0;
-  int minutes = DEMO_ALARM ? 30 : 1;  // default: 30 s in demo mode, 1 min otherwise
+  int minutes = 1;  // default 00:01: 1 s in demo mode, 1 min otherwise
   bool confirmed = false;
 
   waitForRelease();
@@ -776,7 +806,8 @@ double aimOffsetDeg(int headMm) {
 
 // How far to extend the carriage for a head the sensor measured at distanceMm,
 // once the base has turned so the nudger points at it (see aimOffsetDeg).
-// The 2 cm margin stops it just short, since tilting the elbow moves the tip further.
+// The 2 cm margin stops it just short (the arm is tilted down, so the tip also
+// moves a little down as well as forward).
 double reachFor(int distanceMm) {
   double headAlongArm = SENSOR_FROM_PIVOT_CM + distanceMm / 10.0;
   double pivotToHead = sqrt(headAlongArm * headAlongArm + SENSOR_SIDE_CM * SENSOR_SIDE_CM);
@@ -801,16 +832,16 @@ void stopForJam() {
   tiltElbow(0, 40, retractJammed);
 }
 
-// Moves to the head: base, then carriage, then elbow.
+// Moves to the head: base, then elbow down, then carriage out.
 // headAngle is where the SENSOR saw the head; the base turns a little further
 // (aimOffsetDeg) so the NUDGER points at it.
 void reachHead(int headAngle, int headMm, double &reachCm, bool &jammed) {
   rotateBase(headAngle + aimOffsetDeg(headMm), 30, jammed);
   if (jammed) return;
+  tiltElbow(NUDGE_ANGLE, 50, jammed);
+  if (jammed) return;
   reachCm = reachFor(headMm);
   extendCarriage(reachCm, 25, jammed);
-  if (jammed) return;
-  tiltElbow(NUDGE_ANGLE, 50, jammed);
 }
 
 // Stretch goal: the person held the arm away. Back off, return to the saved
@@ -849,10 +880,10 @@ bool recoverFromPush(int &headAngle, int &headMm, double &reachCm,
   int nowMm = seen ? (int)HeadSensor.objectDistance(mm) : -1;
   if (!seen || abs(nowMm - headMm) > PUSH_RESCAN_MM) {
     extendCarriage(0, 40, jammed);
-    tiltElbow(0, 50, jammed);
+    tiltElbow(ELBOW_UP_DEG, 50, jammed);  // up again for the rescan, like at the start
     if (jammed) return true;
     int newMm = 0;
-    int newAngle = scanBed(newMm, jammed);
+    int newAngle = scanBed(-SCAN_DEG, false, newMm, jammed);  // person moved: full sweep
     if (jammed) return true;
     if (newAngle == NOT_FOUND) {
       return false;
@@ -875,8 +906,8 @@ bool recoverFromPush(int &headAngle, int &headMm, double &reachCm,
 // SCAN BED TEST 2  (tests scanBed, plus the distance sensor and rotateBase)
 // ===========================================================================
 // No exact box placement needed: scanBed() sweeps from -90 (one side) towards
-// +90 and STOPS at the first object in range, so you can SEE whether it stopped
-// pointing at the box.
+// +90, crosses the first object in range, then turns back to its MIDDLE, so you
+// can SEE whether it ends up pointing at the middle of the box.
 //
 // Set up: robot in its home pose (base straight ahead), sensor plugged into the
 // HeadSensor port, base motor connected. Keep it still while it calibrates.
@@ -892,7 +923,7 @@ bool recoverFromPush(int &headAngle, int &headMm, double &reachCm,
 //
 // PART 2: SCANS (5 scans). For each one: set up the boxes, press check, wait for
 // the sweep. Then:
-//   - Found something: the base has stopped at the found angle. Screen:
+//   - Found something: the base has turned back to the middle of it. Screen:
 //       "F30 248mm"  = found angle and distance from scanBed
 //       "at 30"      = where the base is pointing now
 //       "mm 251"     = live sensor reading right now
@@ -906,15 +937,15 @@ bool recoverFromPush(int &headAngle, int &headMm, double &reachCm,
 //   - Found nothing: "Not found" / "chk: next"
 //
 //   Suggested scans                        Pass when
-//   2a. One box anywhere in front,          Sweep stops as soon as the sensor reaches the box, and
-//       within range                        it points at the box (look along it). Live mm is
-//                                           within ~30 mm of the found mm. Stepping back one step
-//                                           (towards where it started) reads "none" or OUT of range
+//   2a. One box anywhere in front,          Sweep carries on just past the box, then turns back and
+//       within range                        points at the MIDDLE of it (look along it). Live mm is
+//                                           within ~30 mm of the found mm. Stepping left and right
+//                                           a few steps both reach "none" or OUT of range
 //       ...then on "Nudger aim"             The NUDGER points at the box. If not, use left/right
 //                                           until it does and write down "side". Do this for 2-3
 //                                           box distances and set SENSOR_SIDE_CM to the average
-//   2b. Same box on the other side         Sweeps further before stopping, points at the new spot
-//   2c. Two boxes on opposite sides         Stops at the FIRST box it reaches (the one on the side
+//   2b. Same box on the other side          Sweeps further, points at the middle of the new spot
+//   2c. Two boxes on opposite sides         Points at the FIRST box it reaches (the one on the side
 //                                           the sweep starts from), not the second
 //   2d. No boxes                            Sweeps all the way across, then Not found
 //   2e. One box beyond MAX_HEAD_MM          Not found (if it finds something, check what's in
@@ -986,7 +1017,7 @@ int main() {
     waitForCheckPress();
 
     int foundMm = -1;
-    int foundAngle = scanBed(foundMm, jammed);
+    int foundAngle = scanBed(-SCAN_DEG, false, foundMm, jammed);
 
     if (!jammed && foundAngle == NOT_FOUND) {
       rotateBase(0, 30, jammed);  // back to straight ahead for the next setup

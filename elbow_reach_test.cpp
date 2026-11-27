@@ -83,7 +83,8 @@ const double CM_PER_DEG = 0.0144;           // MEASURE: spin carriage motor 360 
 // from the home pose, where every encoder is zeroed. Every move is clamped to these.
 const double BASE_MIN_DEG = -90.0;       // base degrees, 0 = straight ahead (cables wrap past this)
 const double BASE_MAX_DEG = 90.0;
-const double ELBOW_MIN_DEG = -7.5;        // arm degrees, 0 = home (arm up), + = down toward the bed
+const double ELBOW_MIN_DEG = -7.5;       // arm degrees, 0 = home (where the arm is at start-up),
+                                         // - = up, + = down toward the bed
 const double ELBOW_MAX_DEG = 27.0;
 const double CARRIAGE_MIN_CM = 0.0;      // cm along the arm, 0 = fully pulled in
 const double CARRIAGE_MAX_CM = 18.0;
@@ -100,7 +101,8 @@ const double SENSOR_FROM_PIVOT_CM = 12.0; // base's centre of rotation to the se
 const double RAD_TO_DEG = 180.0 / 3.14159265;
 
 // Tuning (must sit inside the ranges above)
-const double NUDGE_ANGLE = 40.0;         // elbow angle used for nudging (MEASURE)
+const double ELBOW_UP_DEG = ELBOW_MIN_DEG; // arm tilted up while the base scans and turns (TUNE)
+const double NUDGE_ANGLE = 15.0;         // arm tilted down this far before the carriage extends (TUNE)
 const double NUDGE_EXTRA_DEG = 20.0;     // keep pushing this far past first contact so the nudge is felt (TUNE)
 
 // Alarm: true = demo timing, where the clock-style "07:30" means 7 min 30 s
@@ -123,7 +125,6 @@ const int BASE_SLOW_SPEED = 10;          // percent
 // Head scan
 const int SCAN_DEG = 90;                 // sweep from -SCAN_DEG to +SCAN_DEG
 const int SCAN_STEP_DEG = 5;
-const int SCAN_STEPS = 2 * SCAN_DEG / SCAN_STEP_DEG + 1;  // 37 readings
 const int MIN_HEAD_MM = 150;              // ignore readings outside the bed range (MEASURE)
 const int MAX_HEAD_MM = 400;
 const int NOT_FOUND = -999;
@@ -425,34 +426,63 @@ int nudge(int times, int speed, bool &buttonRequested, bool &pushDetected) {
   return hits;
 }
 
-// Sweeps the base from -SCAN_DEG to +SCAN_DEG in SCAN_STEP_DEG steps and stops
-// at the FIRST object inside the bed range (MIN_HEAD_MM to MAX_HEAD_MM), which
-// is assumed to be the head. The base is left pointing at it.
-// Returns its angle and sets headMm (by reference); NOT_FOUND and -1 if nothing
-// was in range anywhere in the sweep.
-int scanBed(int &headMm, bool &jammed) {
-  int headAngle = NOT_FOUND;
+// Sweeps the base from startDeg towards +SCAN_DEG in SCAN_STEP_DEG steps and
+// finds the FIRST object inside the bed range (MIN_HEAD_MM to MAX_HEAD_MM),
+// which is assumed to be the head. It keeps turning across the object until the
+// readings leave the range (its far edge), then turns back to the MIDDLE of it,
+// so the aim isn't thrown off by stopping at the object's first edge.
+// skipCurrent = true: the sensor is on something that turned out NOT to be the
+// head, so first turn past that object and only use the NEXT one.
+// Returns the angle of the middle of the object (the sensor is left pointing
+// there) and sets headMm (by reference) to its closest reading.
+// NOT_FOUND and -1 if nothing was in range before the end of the sweep.
+int scanBed(int startDeg, bool skipCurrent, int &headMm, bool &jammed) {
   headMm = -1;
-  bool found = false;
+  bool pastCurrent = !skipCurrent;  // true once we've turned past the skipped object
+  bool onObject = false;            // true while the readings are on the object
+  bool passedObject = false;        // true once we've reached its far edge
+  int firstAngle = NOT_FOUND;       // angles where the object starts and ends
+  int lastAngle = NOT_FOUND;
 
-  // Keep sweeping until something in range is seen, the sweep ends, or the base jams
+  // Keep sweeping until we're past the object, the sweep ends, or the base jams
   showMessage("Scanning", "");
-  int step = 0;
-  while (step < SCAN_STEPS && !found && !jammed) {
-    int angle = -SCAN_DEG + step * SCAN_STEP_DEG;
+  int angle = startDeg;
+  while (angle <= SCAN_DEG && !passedObject && !jammed) {
     rotateBase(angle, 30, jammed);
     if (!jammed) {
       wait(100, msec);  // let the sensor settle
+      int d = -1;
       if (HeadSensor.isObjectDetected()) {
-        int d = (int)HeadSensor.objectDistance(mm);
-        if (d >= MIN_HEAD_MM && d <= MAX_HEAD_MM) {
-          found = true;  // ends the loop: the base stays pointing at the head
-          headAngle = angle;
-          headMm = d;
+        d = (int)HeadSensor.objectDistance(mm);
+      }
+      bool inRange = (d >= MIN_HEAD_MM && d <= MAX_HEAD_MM);
+      if (!inRange) {
+        pastCurrent = true;  // a gap: anything in range after this is a new object
+        if (onObject) {
+          passedObject = true;  // far edge reached: ends the loop
+        }
+      } else if (pastCurrent) {
+        if (!onObject) {
+          onObject = true;
+          firstAngle = angle;
+        }
+        lastAngle = angle;
+        if (headMm == -1 || d < headMm) {
+          headMm = d;  // closest point of the object, so the reach stops short
         }
       }
     }
-    step++;
+    angle += SCAN_STEP_DEG;
+  }
+
+  // Point the sensor at the middle of the object
+  int headAngle = NOT_FOUND;
+  if (onObject && !jammed) {
+    headAngle = (firstAngle + lastAngle) / 2;
+    rotateBase(headAngle, 30, jammed);
+  }
+  if (headAngle == NOT_FOUND) {
+    headMm = -1;
   }
   return headAngle;
 }
@@ -699,7 +729,7 @@ void stepAlarm(int &hours, int &minutes, bool isLeft, bool byFive) {
 // time-of-day clock).
 int setAlarm() {
   int hours = 0;
-  int minutes = DEMO_ALARM ? 30 : 1;  // default: 30 s in demo mode, 1 min otherwise
+  int minutes = 1;  // default 00:01: 1 s in demo mode, 1 min otherwise
   bool confirmed = false;
 
   waitForRelease();
@@ -776,7 +806,8 @@ double aimOffsetDeg(int headMm) {
 
 // How far to extend the carriage for a head the sensor measured at distanceMm,
 // once the base has turned so the nudger points at it (see aimOffsetDeg).
-// The 2 cm margin stops it just short, since tilting the elbow moves the tip further.
+// The 2 cm margin stops it just short (the arm is tilted down, so the tip also
+// moves a little down as well as forward).
 double reachFor(int distanceMm) {
   double headAlongArm = SENSOR_FROM_PIVOT_CM + distanceMm / 10.0;
   double pivotToHead = sqrt(headAlongArm * headAlongArm + SENSOR_SIDE_CM * SENSOR_SIDE_CM);
@@ -801,16 +832,16 @@ void stopForJam() {
   tiltElbow(0, 40, retractJammed);
 }
 
-// Moves to the head: base, then carriage, then elbow.
+// Moves to the head: base, then elbow down, then carriage out.
 // headAngle is where the SENSOR saw the head; the base turns a little further
 // (aimOffsetDeg) so the NUDGER points at it.
 void reachHead(int headAngle, int headMm, double &reachCm, bool &jammed) {
   rotateBase(headAngle + aimOffsetDeg(headMm), 30, jammed);
   if (jammed) return;
+  tiltElbow(NUDGE_ANGLE, 50, jammed);
+  if (jammed) return;
   reachCm = reachFor(headMm);
   extendCarriage(reachCm, 25, jammed);
-  if (jammed) return;
-  tiltElbow(NUDGE_ANGLE, 50, jammed);
 }
 
 // Stretch goal: the person held the arm away. Back off, return to the saved
@@ -849,10 +880,10 @@ bool recoverFromPush(int &headAngle, int &headMm, double &reachCm,
   int nowMm = seen ? (int)HeadSensor.objectDistance(mm) : -1;
   if (!seen || abs(nowMm - headMm) > PUSH_RESCAN_MM) {
     extendCarriage(0, 40, jammed);
-    tiltElbow(0, 50, jammed);
+    tiltElbow(ELBOW_UP_DEG, 50, jammed);  // up again for the rescan, like at the start
     if (jammed) return true;
     int newMm = 0;
-    int newAngle = scanBed(newMm, jammed);
+    int newAngle = scanBed(-SCAN_DEG, false, newMm, jammed);  // person moved: full sweep
     if (jammed) return true;
     if (newAngle == NOT_FOUND) {
       return false;
@@ -884,8 +915,9 @@ bool recoverFromPush(int &headAngle, int &headMm, double &reachCm,
 // STAGE 0: HOME POSE (sets where 0 is)
 //   Screen: "Elbow" or "Carriage" / "deg 0" (motor degrees) / "A 0.12" / "<  >  chk"
 //   Hold left/right to move the elbow, check, then the carriage, check.
-//   Put the ELBOW all the way UP (the home pose) and the CARRIAGE all the way IN.
-//   Both encoders are zeroed there, just like startUp() assumes.
+//   Put the ELBOW where it should be at start-up (its 0 deg pose) and the
+//   CARRIAGE all the way IN. Both encoders are zeroed there, just like startUp()
+//   assumes when the real program starts.
 //   Pass: while moving, notice which way RIGHT moves each part:
 //     - Elbow: RIGHT should tilt the arm DOWN (toward the bed). If RIGHT tilts it
 //       UP, change ElbowMotor to bool(reverse) in DEVICES. <- likely cause if the
@@ -893,9 +925,9 @@ bool recoverFromPush(int &headAngle, int &headMm, double &reachCm,
 //     - Carriage: RIGHT should slide it OUT. If not, change CarriageMotor to bool(reverse).
 //
 // STAGE 1: ELBOW DIRECTION
-//   tiltElbow(10) from the home pose.
-//   Pass: the arm tilts DOWN about 10 deg and the screen says OK.
-//   Fail: tilts up / "JAM" -> fix the direction (stage 0 note), then re-run.
+//   tiltElbow(10) from the home pose, then tiltElbow(ELBOW_UP_DEG), then back to 0.
+//   Pass: +10 tilts DOWN about 10 deg, ELBOW_UP_DEG tilts UP, both say OK.
+//   Fail: wrong way / "JAM" -> fix the direction (stage 0 note), then re-run.
 //
 // STAGE 2: FIND NUDGE_ANGLE
 //   tiltElbow(NUDGE_ANGLE). The screen shows what was asked ("want", after the
@@ -906,12 +938,12 @@ bool recoverFromPush(int &headAngle, int &headMm, double &reachCm,
 //   If you need more than ELBOW_MAX_DEG, re-measure the elbow range from the
 //   home pose and raise ELBOW_MAX_DEG.
 //
-// STAGE 3: REACH, ONE STEP AT A TIME (same order as reachHead)
+// STAGE 3: REACH, ONE STEP AT A TIME (same order as main + reachHead)
 //   Pretend head straight ahead (sensor angle 0) at 200 mm. Press check before
-//   each step: Base turn -> Carriage out -> Elbow down. After each: OK or JAM.
-//   Pass: all three OK, the arm ends up turned slightly, extended and tilted down.
-//   If one says JAM: that step is what stops the elbow in wake_up_arm.cpp
-//   (reachHead skips the elbow if anything before it jams).
+//   each step: Elbow up -> Base turn -> Elbow down -> Carriage out. After each: OK or JAM.
+//   Pass: all OK; the arm tilts up, turns slightly, tilts down, then extends.
+//   If one says JAM: that step is what stops the rest in wake_up_arm.cpp
+//   (reachHead skips everything after a jam).
 //
 // STAGE 4: NUDGE AT THAT ANGLE
 //   Put your hand where the head would be, press check: nudge(3) runs.
@@ -991,6 +1023,12 @@ int main() {
   tiltElbow(10, 30, jammed);
   showStepResult("Went down?", jammed);
   if (!jammed) {
+    showMessage("Elbow up", "chk: go");
+    waitForCheckPress();
+    tiltElbow(ELBOW_UP_DEG, 30, jammed);
+    showStepResult("Went up?", jammed);
+  }
+  if (!jammed) {
     tiltElbow(0, 30, jammed);
   }
 
@@ -1050,22 +1088,28 @@ int main() {
   const int FAKE_HEAD_MM = 200;
   double reachCm = reachFor(FAKE_HEAD_MM);
   if (!jammed) {
-    showMessage("1 Base", "chk: go");
+    showMessage("1 Elbow up", "chk: go");
+    waitForCheckPress();
+    tiltElbow(ELBOW_UP_DEG, 50, jammed);
+    showStepResult("Elbow up", jammed);
+  }
+  if (!jammed) {
+    showMessage("2 Base", "chk: go");
     waitForCheckPress();
     rotateBase(0 + aimOffsetDeg(FAKE_HEAD_MM), 30, jammed);
     showStepResult("Base turn", jammed);
   }
   if (!jammed) {
-    showMessage("2 Carriage", "chk: go");
-    waitForCheckPress();
-    extendCarriage(reachCm, 25, jammed);
-    showStepResult("Carriage", jammed);
-  }
-  if (!jammed) {
-    showMessage("3 Elbow", "chk: go");
+    showMessage("3 Elbow dn", "chk: go");
     waitForCheckPress();
     tiltElbow(nudgeAngle, 50, jammed);
     showStepResult("Elbow down", jammed);
+  }
+  if (!jammed) {
+    showMessage("4 Carriage", "chk: go");
+    waitForCheckPress();
+    extendCarriage(reachCm, 25, jammed);
+    showStepResult("Carriage", jammed);
   }
 
   // ----- STAGE 4: nudge -----
